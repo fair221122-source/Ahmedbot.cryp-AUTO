@@ -5,11 +5,12 @@ import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth
 
-# --- إعدادات الأمان والربط ---
+# --- إعدادات الأمان والربط (Secrets) ---
 POCKET_EMAIL = os.getenv("POCKET_EMAIL")
 POCKET_PASSWORD = os.getenv("POCKET_PASSWORD")
 BINANCE_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET_KEY")
+PROXY_URL = os.getenv("PROXY_URL")  # إضافة متغير البروكسي هنا
 
 # قائمة الروابط البديلة لتجاوز حظر المناطق الجغرافية في GitHub
 BINANCE_BASE_URLS = [
@@ -40,28 +41,38 @@ def sniper_trade():
     print("📡 بدء تحليل الـ 20 عملة الأكثر نشاطاً عبر رادار بايننس...")
     
     exchange = None
-    # محاولة الاتصال عبر روابط مختلفة لتجاوز خطأ 451
+    # محاولة الاتصال عبر روابط مختلفة لتجاوز خطأ 451 مع دعم البروكسي
     for base_url in BINANCE_BASE_URLS:
         try:
             print(f"🔗 محاولة الربط عبر خادم: {base_url}")
-            temp_exchange = ccxt.binance({
+            
+            # إعدادات الاتصال (تتضمن البروكسي إذا تم توفيره)
+            config = {
                 'apiKey': BINANCE_KEY,
                 'secret': BINANCE_SECRET,
                 'enableRateLimit': True,
                 'urls': {'api': {'public': base_url, 'private': base_url}}
-            })
+            }
+            
+            # تفعيل البروكسي في مكتبة ccxt إذا كان موجوداً
+            if PROXY_URL:
+                config['proxies'] = {'http': PROXY_URL, 'https': PROXY_URL}
+                print("🛡️ تم تفعيل نظام البروكسي لتجاوز الحظر الجغرافي.")
+
+            temp_exchange = ccxt.binance(config)
+            
             # اختبار الاتصال
             temp_exchange.fetch_status()
             exchange = temp_exchange
             print(f"✅ تم الاتصال بنجاح عبر {base_url}")
             break
         except Exception as e:
-            print(f"⚠️ الخادم {base_url} غير متاح أو محظور.")
+            print(f"⚠️ الخادم {base_url} لم يستجب (قد يكون بسبب الحظر الجغرافي).")
             continue
 
     if not exchange:
-        print("❌ فشل الاتصال بجميع خوادم بايننس من هذه المنطقة الجغرافية.")
-        print("💡 نصيحة: إذا كنت تستخدم GitHub Actions، قد تحتاج لتشغيل الكود محلياً أو استخدام Proxy.")
+        print("❌ فشل الاتصال بجميع خوادم بايننس.")
+        print("💡 تأكد من إضافة PROXY_URL في Secrets إذا كنت تشغل الكود من GitHub.")
         return
 
     try:
@@ -72,12 +83,13 @@ def sniper_trade():
             # منطق حساب السيولة (المعايير الخاصة بك)
             activity = 94  
             
+            # تم التعديل إلى 85% حسب طلبك
             if activity >= 85:
                 opportunity = {'pair': pair, 'activity': activity}
                 break 
         
         if not opportunity:
-            print("⏳ لا توجد سيولة 90% حالياً. حاول لاحقاً.")
+            print("⏳ لا توجد سيولة 85% حالياً. حاول لاحقاً.")
             return
 
         trade_time = analyze_momentum_and_time(opportunity['activity'])
@@ -91,6 +103,7 @@ def sniper_trade():
 
 def execute_on_pocket(pair, duration):
     with sync_playwright() as p:
+        # ملاحظة: إذا كنت تستخدم بروكسي لبايننس، قد تحتاج لإضافته للمتصفح أيضاً هنا
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         stealth(page)
@@ -118,3 +131,4 @@ def execute_on_pocket(pair, duration):
 
 if __name__ == "__main__":
     sniper_trade()
+
