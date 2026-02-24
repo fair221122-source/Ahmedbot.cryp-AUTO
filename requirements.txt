@@ -1,4 +1,0 @@
-playwright
-playwright-stealth
-ccxt
-pandas
