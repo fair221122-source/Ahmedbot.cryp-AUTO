@@ -31,7 +31,7 @@ CRYPTOPANIC_API_KEY = 'a5563e90848ba81e4aeca929e26d90069b2d1b9f'
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-SYMBOLS = [
+
 # قائمة الـ 50 عملة الأقوى سيولة وحركة في Binance Futures - فبراير 2026
 SYMBOLS = [
     # 💎 العملات القيادية (High Caps)
