@@ -33,11 +33,15 @@ bot = Bot(token=TELEGRAM_TOKEN)
 
 # قائمة العملات القوية والواضحة (بدون أصفار كثيرة) - فبراير 2026 [cite: 2026-02-15]
 SYMBOLS = [
-    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 'LTC-USD', 'BCH-USD', 'LINK-USD',
-    'TAO-USD', 'FET-USD', 'RENDER-USD', 'NEAR-USD', 'GRT-USD', 'INJ-USD', 'FIL-USD', 'ICP-USD',
-    'AVAX-USD', 'DOT-USD', 'APT1-USD', 'SUI1-USD', 'OP-USD', 'ARB-USD', 'POL-USD', 'STX-USD', 
-    'IMX-USD', 'ATOM-USD', 'TIA-USD', 'SEI-USD', 'EGLD-USD', 'ALGO-USD', 'TRX-USD',
-    'AAVE-USD', 'UNI1-USD', 'LDO-USD', 'PENDLE-USD', 'ENA-USD', 'SNX-USD', 'CRV-USD', 'DYDX-USD', 'MKR-USD'
+symbols = [
+        "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD",
+        "ADA-USD", "AVAX-USD", "LINK-USD", "DOT-USD", "TRX-USD",
+        "BCH-USD", "UNI-USD", "LDO-USD", "ETC-USD", "ATOM-USD",
+        "ICP-USD", "FTM-USD", "SEI-USD", "TAO-USD", "NEAR-USD",
+        "LTC-USD", "APT-USD", "FIL-USD", "OP-USD", "ARB-USD",
+        "TIA-USD", "STX-USD", "INJ-USD", "RNDR-USD", "SUI-USD",
+        "PYTH-USD", "WLD-USD", "GALA-USD", "FET-USD", "ORDI-USD",
+        "AAVE-USD", "IMX-USD", "JUP-USD", "DYDX-USD", "POL-USD"
 ]
 
 active_trades = {}
