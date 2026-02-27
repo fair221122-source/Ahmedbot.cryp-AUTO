@@ -4,6 +4,26 @@ import ccxt
 import pandas as pd
 from telegram import Bot
 
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+
+# --- حل مشكلة Render Port Binding ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Running")
+
+def run_port_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# تشغيل الخادم في مسار منفصل لكي لا يعطل البوت
+threading.Thread(target=run_port_server, daemon=True).start()
+# ------------------------------------
+
 # ==========================================
 # 🔑 بيانات الربط (استخدم بياناتك هنا)
 # ==========================================
