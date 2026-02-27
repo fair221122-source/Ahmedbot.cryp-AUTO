@@ -32,17 +32,25 @@ CRYPTOPANIC_API_KEY = 'a5563e90848ba81e4aeca929e26d90069b2d1b9f'
 bot = Bot(token=TELEGRAM_TOKEN)
 
 SYMBOLS = [
-    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'TAO-USD', 
-    'AAVE-USD', 'LTC-USD', 'BCH-USD', 'ORDI-USD', 
-    'AVAX-USD', 'LINK-USD', 'INJ-USD', 'NEAR-USD', 'DOT-USD', 
-    'UNI1-USD', 'APT1-USD', 'OP-USD', 'SUI1-USD', 'TIA-USD', 
-    'RENDER-USD', 'FIL-USD', 'STX-USD', 'FET-USD', 'LDO-USD', 
-    'DYDX-USD', 'SNX-USD', 'ENS-USD', 'PENDLE-USD', 'RUNE-USD', 
-    'AXS-USD', 'AR-USD', 'IMX-USD', 'SEI-USD', 'THETA-USD', 
-    'EGLD-USD', 'ALGO-USD', 'ATOM-USD', 'VET-USD', 'XRP-USD', 
-    'ADA-USD', 'DOGE-USD', 'MATIC-USD', 'CRV-USD', 'PYTH-USD', 
-    'JTO-USD', 'ENA-USD', 'W-USD', 'ICP-USD', 'TRX-USD', 'ETC-USD'
+# قائمة الـ 50 عملة الأقوى سيولة وحركة في Binance Futures - فبراير 2026
+SYMBOLS = [
+    # 💎 العملات القيادية (High Caps)
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 'LTC-USD', 'BCH-USD', 'LINK-USD',
+    
+    # 🧠 قطاع الذكاء الاصطناعي والبيانات (أقوى حركة حالياً)
+    'TAO-USD', 'FET-USD', 'RENDER-USD', 'NEAR-USD', 'GRT-USD', 'INJ-USD', 'FIL-USD', 'ICP-USD',
+    
+    # 🏗️ شبكات الطبقة الأولى والثانية (L1 & L2)
+    'AVAX-USD', 'DOT-USD', 'APT1-USD', 'SUI1-USD', 'OP-USD', 'ARB-USD', 'POL-USD', 'STX-USD', 
+    'IMX-USD', 'ATOM-USD', 'TIA-USD', 'SEI-USD', 'EGLD-USD', 'ALGO-USD', 'TRX-USD',
+    
+    # 💸 قطاع التمويل اللامركزي والسيولة (DeFi)
+    'AAVE-USD', 'UNI1-USD', 'LDO-USD', 'PENDLE-USD', 'ENA-USD', 'SNX-USD', 'CRV-USD', 'DYDX-USD', 'MKR-USD',
+    
+    # 🔥 عملات الميم والسيولة العالية (أفضل حركة مضاربية)
+    'DOGE-USD', 'SHIB-USD', 'PEPE-USD', 'WIF-USD', 'BONK-USD', 'FLOKI-USD', 'POPCAT-USD', 'NOT-USD', 'ORDI-USD'
 ]
+
 
 active_trades = {}
 
