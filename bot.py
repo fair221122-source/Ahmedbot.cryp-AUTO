@@ -35,7 +35,7 @@ SYMBOLS = [
     'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'TAO-USD', 
     'AAVE-USD', 'LTC-USD', 'BCH-USD', 'ORDI-USD', 
     'AVAX-USD', 'LINK-USD', 'INJ-USD', 'NEAR-USD', 'DOT-USD', 
-    'UNI-USD', 'APT-USD', 'OP-USD', 'SUI-USD', 'TIA-USD', 
+    'UNI1-USD', 'APT1-USD', 'OP-USD', 'SUI1-USD', 'TIA-USD', 
     'RENDER-USD', 'FIL-USD', 'STX-USD', 'FET-USD', 'LDO-USD', 
     'DYDX-USD', 'SNX-USD', 'ENS-USD', 'PENDLE-USD', 'RUNE-USD', 
     'AXS-USD', 'AR-USD', 'IMX-USD', 'SEI-USD', 'THETA-USD', 
@@ -66,9 +66,9 @@ def get_global_news():
 
 async def analyze_market(symbol):
     try:
-        data_4h = yf.download(symbol, period='5d', interval='4h', progress=False)
-        df_4h = calculate_indicators(data_4h)
-        is_up = df_4h['Close'].iloc[-1] > df_4h['ema_200'].iloc[-1]
+        data_4h = yf.download(symbol, period='1mo', interval='4h', progress=False)
+data_1h = yf.download(symbol, period='1mo', interval='1h', progress=False)
+
         
         data_1h = yf.download(symbol, period='2d', interval='1h', progress=False)
         df_1h = calculate_indicators(data_1h)
