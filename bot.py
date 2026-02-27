@@ -35,8 +35,18 @@ bot = Bot(token=TELEGRAM_TOKEN)
 exchange = ccxt.binance({'options': {'defaultType': 'future'}})
 
 # قائمة الـ 51 عملة
-SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'TAO/USDT', 'MKR/USDT', 'AAVE/USDT', 'LTC/USDT', 'BCH/USDT', 'ORDI/USDT', 'AVAX/USDT', 'LINK/USDT', 'INJ/USDT', 'NEAR/USDT', 'DOT/USDT', 'UNI/USDT', 'APT/USDT', 'OP/USDT', 'SUI/USDT', 'TIA/USDT', 'RNDR/USDT', 'FIL/USDT', 'STX/USDT', 'FET/USDT', 'LDO/USDT', 'DYDX/USDT', 'SNX/USDT', 'ENS/USDT', 'PENDLE/USDT', 'RUNE/USDT', 'AXS/USDT', 'AR/USDT', 'IMX/USDT', 'SEI/USDT', 'THETA/USDT', 'EGLD/USDT', 'ALGO/USDT', 'ATOM/USDT', 'VET/USDT', 'XRP/USDT', 'ADA/USDT', 'DOGE/USDT', 'MATIC/USDT', 'CRV/USDT', 'PYTH/USDT', 'WIF/USDT', 'JTO/USDT', 'ENA/USDT', 'W/USDT', 'ICP/USDT']
-
+SYMBOLS = [
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'TAO-USD', 
+    'SKY-USD', 'AAVE-USD', 'LTC-USD', 'BCH-USD', 'ORDI-USD', 
+    'AVAX-USD', 'LINK-USD', 'INJ-USD', 'NEAR-USD', 'DOT-USD', 
+    'UNI-USD', 'APT-USD', 'OP-USD', 'SUI-USD', 'TIA-USD', 
+    'RNDR-USD', 'FIL-USD', 'STX-USD', 'FET-USD', 'LDO-USD', 
+    'DYDX-USD', 'SNX-USD', 'ENS-USD', 'PENDLE-USD', 'RUNE-USD', 
+    'AXS-USD', 'AR-USD', 'IMX-USD', 'SEI-USD', 'THETA-USD', 
+    'EGLD-USD', 'ALGO-USD', 'ATOM-USD', 'VET-USD', 'XRP-USD', 
+    'ADA-USD', 'DOGE-USD', 'MATIC-USD', 'CRV-USD', 'PYTH-USD', 
+    'JTO-USD', 'ENA-USD', 'W-USD', 'ICP-USD', 'TRX-USD', 'ETC-USD'
+]
 # مخزن لمراقبة الصفقات المفتوحة والأهداف
 active_trades = {}
 
