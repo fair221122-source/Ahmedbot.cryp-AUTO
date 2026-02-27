@@ -16,7 +16,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is Running")
 
 def run_port_server():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 9000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
