@@ -222,29 +222,34 @@ R:R    : 1:4
 
 async def run():
 
+    print("=== Starting Market Scan ===")
+
     async with aiohttp.ClientSession() as session:
 
         news = get_news()
+        print("News fetched")
+
         btc15 = await fetch_klines(session, "BTCUSDT", "15m")
         btc15 = calculate_indicators(btc15)
+        print("BTC data ready")
 
         opportunities = []
 
         for sym in SYMBOLS:
+            print("Analyzing:", sym)
+
             if sym in active_trades:
                 continue
 
             result = await analyze_symbol(session, sym, btc15, news)
+
             if result:
+                print("Opportunity found:", sym)
                 opportunities.append(result)
 
             await asyncio.sleep(0.2)
 
-        opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)[:2]
-
-        for op in opportunities:
-            send_signal(op)
-            active_trades[op["symbol"]] = op
+        print("Scan finished")
 
 # ==============================
 
