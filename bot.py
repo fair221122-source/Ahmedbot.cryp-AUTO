@@ -155,7 +155,7 @@ async def analyze_symbol(session, symbol, btc15, news):
     if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
         score += 1
 
-    if score < 6:
+    if score < 4:
         return None
 
     sl = price - atr*1.5 if direction=="LONG" else price + atr*1.5
