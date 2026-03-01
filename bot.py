@@ -225,18 +225,12 @@ async def run():
     async with aiohttp.ClientSession() as session:
 
         news = get_news()
-        print("News fetched")
-
         btc15 = await fetch_klines(session, "BTCUSDT", "15m")
         btc15 = calculate_indicators(btc15)
-        print("BTC data ready")
 
         opportunities = []
 
         for sym in SYMBOLS:
-            print("Analyzing:", sym)
-
-
 
             result = await analyze_symbol(session, sym, btc15, news)
 
@@ -245,17 +239,18 @@ async def run():
 
             await asyncio.sleep(0.2)
 
-if opportunities:
-    opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
-    top_opportunities = opportunities[:2]
+        # هنا فقط يكون الشرط
+        if opportunities:
+            opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
+            top_opportunities = opportunities[:2]
 
-    for opp in top_opportunities:
-        send_signal(opp)
+            for opp in top_opportunities:
+                send_signal(opp)
 
-else:
-    print("No opportunities this round")
+        else:
+            print("No opportunities this round")
 
-print("Scan finished")
+        print("Scan finished")
 
 # ==============================
 
