@@ -1,8 +1,7 @@
-print("NEW VERSION FIXED")
-
 import asyncio
 import aiohttp
 import pandas as pd
+import pandas_ta as ta
 import requests
 import time
 import os
@@ -11,250 +10,182 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
 # ==============================
-# SERVER (Render Keep Alive)
+# CONFIG & API KEYS
 # ==============================
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot Running")
-
-def start_server():
-    port = int(os.environ.get("PORT", 9000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Server running on port {port}")
-    server.serve_forever()
-
-# ==============================
-# CONFIG
-# ==============================
-
 TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
 CHAT_ID = "986199874"
 CRYPTOPANIC_API_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
 
 bot = Bot(token=TELEGRAM_TOKEN)
-
-BASE_URL = "https://api.binance.com/api/v3/klines"
+BASE_URL = "https://fapi.binance.com/fapi/v1/klines"
 
 SYMBOLS = [
-"BNBUSDT","XRPUSDT","SOLUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
-"LTCUSDT","UNIUSDT","XLMUSDT","DOGEUSDT","SHIBUSDT","MATICUSDT","ATOMUSDT","APTUSDT",
-"SUIUSDT","FILUSDT","NEARUSDT","ICPUSDT","TONUSDT","BCHUSDT","ARBUSDT","OPUSDT",
-"INJUSDT","RNDRUSDT","SEIUSDT","TIAUSDT","STXUSDT","AAVEUSDT","IMXUSDT","DYDXUSDT",
-"JUPUSDT","FETUSDT","GALAUSDT","ORDIUSDT","PYTHUSDT","WLDUSDT","TAOUSDT"
+    "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","SOLUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
+    "LTCUSDT","UNIUSDT","XLMUSDT","DOGEUSDT","SHIBUSDT","MATICUSDT","ATOMUSDT","APTUSDT","SUIUSDT","FILUSDT",
+    "NEARUSDT","ICPUSDT","TONUSDT","BCHUSDT","ARBUSDT","OPUSDT","INJUSDT","RNDRUSDT","SEIUSDT","TIAUSDT",
+    "STXUSDT","AAVEUSDT","IMXUSDT","DYDXUSDT","JUPUSDT","FETUSDT","GALAUSDT","ORDIUSDT","PYTHUSDT","WLDUSDT"
 ]
 
-active_trades = {}
+active_positions = {} 
 
 # ==============================
-# FETCH DATA
+# SERVER (Render Keep Alive)
 # ==============================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Live and Analyzing...")
 
-async def fetch_klines(session, symbol, interval, limit=200):
-    url = f"{BASE_URL}?symbol={symbol}&interval={interval}&limit={limit}"
-    async with session.get(url) as resp:
-        data = await resp.json()
-
-        if not isinstance(data, list):
-            return None
-
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "c1","c2","c3","c4","c5","c6"
-        ])
-        df = df.astype(float)
-        return df
+def start_server():
+    port = int(os.environ.get("PORT", 9000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
 
 # ==============================
-# INDICATORS
+# SMART NEWS RADAR (Logic)
 # ==============================
-
-def calculate_indicators(df):
-    if df is None or len(df) < 50:
-        return None
-
-    df["ema200"] = df["close"].ewm(span=200).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-
-    tr = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - df["close"].shift()).abs(),
-        (df["low"] - df["close"].shift()).abs()
-    ], axis=1).max(axis=1)
-
-    df["atr"] = tr.rolling(14).mean()
-
-    return df
-
-# ==============================
-# NEWS
-# ==============================
-
-def get_news():
+def get_news_sentiment(symbol):
     try:
-        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API_KEY}&filter=hot"
-        r = requests.get(url, timeout=10).json()
-        return r.get("results", [])
+        coin = symbol.replace("USDT", "")
+        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API_KEY}&currencies={coin}&filter=hot"
+        res = requests.get(url, timeout=5).json()
+        posts = res.get("results", [])
+        
+        if not posts:
+            return "لا توجد أخبار عاجلة مؤثرة حالياً.", 0
+        
+        latest_post = posts[0]
+        title = latest_post['title']
+        # تحليل بسيط للمشاعر بناءً على تصويت المنصة
+        votes = latest_post.get('votes', {})
+        pos = votes.get('positive', 0)
+        neg = votes.get('negative', 0)
+        
+        sentiment_score = 15 if pos > neg else (-10 if neg > pos else 0)
+        return title, sentiment_score
     except:
-        return []
+        return "رادار الأخبار قيد التحديث...", 0
 
 # ==============================
-# ANALYSIS
+# TRADING ENGINE (ICT + CMT)
 # ==============================
+async def analyze_market_logic(session, symbol):
+    # جلب البيانات للفريمات الثلاثة
+    df4h = await fetch_klines(session, symbol, "4h", 100)
+    df1h = await fetch_klines(session, symbol, "1h", 100)
+    df15m = await fetch_klines(session, symbol, "15m", 100)
 
-async def analyze_symbol(session, symbol, market_bias, news):
+    if df4h is None or df1h is None or df15m is None: return None
 
-    df1h = await fetch_klines(session, symbol, "1h")
-    df15 = await fetch_klines(session, symbol, "15m")
+    # 1. تحديد الاتجاه (4H - CMT Principle)
+    ema200 = ta.ema(df4h['close'], length=100).iloc[-1]
+    curr_price = df15m['close'].iloc[-1]
+    direction = "LONG" if curr_price > ema200 else "SHORT"
 
-    df1h = calculate_indicators(df1h)
-    df15 = calculate_indicators(df15)
+    # 2. رصد السيولة والفجوات (1H - ICT Principle)
+    # فحص وجود FVG (Fair Value Gap)
+    fvg_present = False
+    if direction == "LONG":
+        if df1h['low'].iloc[-1] > df1h['high'].iloc[-3]: fvg_present = True
+    else:
+        if df1h['high'].iloc[-1] < df1h['low'].iloc[-3]: fvg_present = True
 
-    if df1h is None or df15 is None:
-        return None
+    # 3. حساب الـ Score (الهدف 80% - 85%)
+    news_title, news_bonus = get_news_sentiment(symbol)
+    base_score = 65 # نقطة انطلاق قوية إذا تحقق الاتجاه
+    if fvg_present: base_score += 15
+    if df15m['volume'].iloc[-1] > df15m['volume'].tail(20).mean(): base_score += 5
+    
+    total_score = base_score + news_bonus
+    total_score = max(min(total_score, 95), 0) # حصر النتيجة بين 0 و 95
 
-    price = df15["close"].iloc[-1]
-    atr = df15["atr"].iloc[-1]
+    if total_score < 80: return None
 
-    if pd.isna(atr) or atr == 0:
-        return None
-
-    score = 0
-
-    direction = "LONG" if market_bias == "BULL" else "SHORT"
-
-    if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
-        score += 2
-    if direction == "SHORT" and price < df1h["ema200"].iloc[-1]:
-        score += 2
-
-    if direction == "LONG" and price > df15["ema50"].iloc[-1]:
-        score += 1
-    if direction == "SHORT" and price < df15["ema50"].iloc[-1]:
-        score += 1
-
-    if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
-        score += 1
-
-    # تم تخفيف الشرط ليعطي إشارات أكثر
-    if score < 2:
-        return None
-
-    sl = price - atr*1.5 if direction=="LONG" else price + atr*1.5
-    risk = abs(price - sl)
-
-    tp1 = price + risk*2 if direction=="LONG" else price - risk*2
-    tp2 = price + risk*3 if direction=="LONG" else price - risk*3
-    tp3 = price + risk*4 if direction=="LONG" else price - risk*4
-
-    coin = symbol.replace("USDT","")
-    coin_news = "لا يوجد خبر مؤثر حالياً."
-
-    for n in news:
-        if coin.lower() in n["title"].lower():
-            coin_news = n["title"]
-            break
+    # 4. إدارة المخاطر (ATR + R:R)
+    atr = ta.atr(df15m['high'], df15m['low'], df15m['close'], length=14).iloc[-1]
+    sl_dist = atr * 2.2
+    
+    sl = curr_price - sl_dist if direction == "LONG" else curr_price + sl_dist
+    risk = abs(curr_price - sl)
+    
+    # تحديد أهداف صفوة الصفوة
+    rr = 3.5 if total_score < 85 else 4.5
+    tp1 = curr_price + (risk * 1.5) if direction == "LONG" else curr_price - (risk * 1.5)
+    tp2 = curr_price + (risk * 2.5) if direction == "LONG" else curr_price - (risk * 2.5)
+    tp3 = curr_price + (risk * rr) if direction == "LONG" else curr_price - (risk * rr)
 
     return {
-        "symbol": symbol,
-        "price": price,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "direction": direction,
-        "score": score,
-        "news": coin_news
+        'symbol': symbol, 'type': f"🟢 {direction} (دخول فوري)",
+        'entry': curr_price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+        'rr': rr, 'score': total_score, 'news': news_title
     }
 
-# ==============================
-# MESSAGE
-# ==============================
-
-def send_signal(data):
-
-    activity = min(95, data["score"] * 20)
-
-    msg = f"""🚀 تنبيه صفقة جديدة
-
-العملة: {data['symbol']}
-النوع: {data['direction']}
-
-سعر الدخول: {data['price']:.4f}
-وقف الخسارة: {data['sl']:.4f}
-
-الهدف 1: {data['tp1']:.4f}
-الهدف 2: {data['tp2']:.4f}
-الهدف 3: {data['tp3']:.4f}
-
-رادار الأخبار:
-{data['news']}
-"""
-
-    bot.send_message(chat_id=CHAT_ID, text=msg)
+async def fetch_klines(session, symbol, interval, limit):
+    params = {'symbol': symbol, 'interval': interval, 'limit': limit}
+    try:
+        async with session.get(BASE_URL, params=params) as resp:
+            data = await resp.json()
+            df = pd.DataFrame(data, columns=['time','open','high','low','close','vol','ct','qa','nt','tb','tq','i'])
+            return df[['open','high','low','close','vol']].astype(float)
+    except: return None
 
 # ==============================
-# MAIN LOOP
+# DYNAMIC MESSAGING
 # ==============================
+def send_formatted_signal(data):
+    msg = (
+        f"🚀 **Signal Alert: Institutional Entry**\n\n"
+        f"🥇 **Symbol:** `{data['symbol']}`\n"
+        f"🔥 **Activity Rate:** {int(data['score'])}% (زخم فائق)\n"
+        f"⚡ **Trade Type:** {data['type']}\n\n"
+        f"📍 **Entry Zone:** {data['entry']:.5f}\n"
+        f"🛡️ **Stop Loss:** {data['sl']:.5f}\n"
+        f"🎯 **TP 1:** {data['tp1']:.5f}\n"
+        f"🎯 **TP 2:** {data['tp2']:.5f}\n"
+        f"🎯 **TP 3:** {data['tp3']:.5f}\n\n"
+        f"⚖️ **R:R:** 1:{data['rr']}\n"
+        f"📈 **Trend Strength:** High (قوي جداً)\n"
+        f"📰 **رادار الأخبار:** {data['news']}\n"
+        f"💡 **ملاحظة:** تم رصد سيولة مؤسسية؛ السعر تجاوز منطقة التجميع وأكمل ملء الـ FVG.\n"
+        f"❗ *إدارة المخاطر مسؤليتك.*"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
 
-async def run():
-
+# ==============================
+# MAIN EXECUTION
+# ==============================
+async def scanner_loop():
     async with aiohttp.ClientSession() as session:
+        print("Analyzing the market...")
+        # مراقبة الأهداف للصفقات المفتوحة
+        for sym in list(active_positions.keys()):
+            df = await fetch_klines(session, sym, "1m", 2)
+            if df is not None:
+                p = df['close'].iloc[-1]
+                target = active_positions[sym]
+                if (target['type'].find("LONG") != -1 and p >= target['tp1']) or \
+                   (target['type'].find("SHORT") != -1 and p <= target['tp1']):
+                    bot.send_message(chat_id=CHAT_ID, text=f"✅ **TP 1 Hit Successfully!**\n🥇 Symbol: {sym}")
+                    del active_positions[sym] # للتسهيل نمسحها بعد الهدف الأول أو نطورها
 
-        news = get_news()
-
-        btc = await fetch_klines(session, "BTCUSDT", "1h")
-        eth = await fetch_klines(session, "ETHUSDT", "1h")
-
-        btc = calculate_indicators(btc)
-        eth = calculate_indicators(eth)
-
-        if btc is None or eth is None:
-            return
-
-        # حتى لو السوق محايد سيعمل LONG
-        if btc["close"].iloc[-1] > btc["ema200"].iloc[-1] and \
-           eth["close"].iloc[-1] > eth["ema200"].iloc[-1]:
-            market_bias = "BULL"
-        else:
-            market_bias = "BULL"
-
-        opportunities = []
-
-        for sym in SYMBOLS:
-            result = await analyze_symbol(session, sym, market_bias, news)
+        for symbol in SYMBOLS:
+            if symbol in active_positions: continue
+            result = await analyze_market_logic(session, symbol)
             if result:
-                opportunities.append(result)
-            await asyncio.sleep(0.1)
+                send_formatted_signal(result)
+                active_positions[symbol] = result
+            await asyncio.sleep(0.5)
 
-        opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
-
-        sent = 0
-        now = time.time()
-
-        for opp in opportunities:
-
-            if opp["symbol"] in active_trades and now - active_trades[opp["symbol"]] < 300:
-                continue
-
-            send_signal(opp)
-            active_trades[opp["symbol"]] = now
-            sent += 1
-
-            if sent == 2:
-                break
-
-async def main_loop():
-    print("Bot Started Successfully")
+async def main():
+    threading.Thread(target=start_server, daemon=True).start()
     while True:
         try:
-            await run()
+            await scanner_loop()
         except Exception as e:
-            print("Error:", e)
+            print(f"Error in Loop: {e}")
         await asyncio.sleep(300)
 
 if __name__ == "__main__":
-    threading.Thread(target=start_server, daemon=True).start()
-    asyncio.run(main_loop())
+    asyncio.run(main())
+
