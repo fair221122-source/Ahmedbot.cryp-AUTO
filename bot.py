@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
 # ==============================
-# PORT 9000 for Render
+# SERVER (Render Keep Alive)
 # ==============================
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -19,7 +19,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot Running")
 
 def run_server():
-    server = HTTPServer(("0.0.0.0", 9000), HealthHandler)
+    port = int(os.environ.get("PORT", 9000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
@@ -37,7 +38,7 @@ bot = Bot(token=TELEGRAM_TOKEN)
 BASE_URL = "https://api.binance.com/api/v3/klines"
 
 SYMBOLS = [
-"ETHUSDT","BNBUSDT","XRPUSDT","SOLUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
+"BNBUSDT","XRPUSDT","SOLUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
 "LTCUSDT","UNIUSDT","XLMUSDT","DOGEUSDT","SHIBUSDT","MATICUSDT","ATOMUSDT","APTUSDT",
 "SUIUSDT","FILUSDT","NEARUSDT","ICPUSDT","TONUSDT","BCHUSDT","ARBUSDT","OPUSDT",
 "INJUSDT","RNDRUSDT","SEIUSDT","TIAUSDT","STXUSDT","AAVEUSDT","IMXUSDT","DYDXUSDT",
@@ -70,6 +71,7 @@ def calculate_indicators(df):
         return None
 
     df["ema200"] = df["close"].ewm(span=200).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
 
     tr = pd.concat([
         df["high"] - df["low"],
@@ -94,31 +96,18 @@ def get_news():
         return []
 
 # ==============================
-# SMT
-# ==============================
-
-def smt_divergence(alt, btc):
-    if alt is None or btc is None:
-        return False
-
-    return alt["high"].iloc[-1] > alt["high"].iloc[-5] and \
-           btc["high"].iloc[-1] <= btc["high"].iloc[-5]
-
-# ==============================
 # ANALYSIS
 # ==============================
 
-async def analyze_symbol(session, symbol, btc15, news):
+async def analyze_symbol(session, symbol, market_bias, news):
 
-    df4h = await fetch_klines(session, symbol, "4h")
     df1h = await fetch_klines(session, symbol, "1h")
     df15 = await fetch_klines(session, symbol, "15m")
 
-    df4h = calculate_indicators(df4h)
     df1h = calculate_indicators(df1h)
     df15 = calculate_indicators(df15)
 
-    if df4h is None or df1h is None or df15 is None:
+    if df1h is None or df15 is None:
         return None
 
     price = df15["close"].iloc[-1]
@@ -130,31 +119,31 @@ async def analyze_symbol(session, symbol, btc15, news):
     score = 0
     direction = None
 
-    if price > df4h["ema200"].iloc[-1]:
+    # اتجاه السوق العام من BTC و ETH
+    if market_bias == "BULL":
         direction = "LONG"
-        score += 2
-    else:
+    elif market_bias == "BEAR":
         direction = "SHORT"
+    else:
+        return None
+
+    # توافق الاتجاه مع EMA200
+    if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
+        score += 2
+    if direction == "SHORT" and price < df1h["ema200"].iloc[-1]:
         score += 2
 
-    if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
+    # كسر EMA50
+    if direction == "LONG" and price > df15["ema50"].iloc[-1]:
         score += 1
-    if direction == "SHORT" and price < df1h["ema200"].iloc[-1]:
-        score += 1
-
-    if direction == "LONG" and df15["high"].iloc[-1] > df15["high"].iloc[-5]:
-        score += 1
-    if direction == "SHORT" and df15["low"].iloc[-1] < df15["low"].iloc[-5]:
+    if direction == "SHORT" and price < df15["ema50"].iloc[-1]:
         score += 1
 
+    # حجم تداول مرتفع
     if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
         score += 1
 
-    if smt_divergence(df15, btc15):
-        score += 1
-
-    # تخفيف الفلتر
-    if score < 1:
+    if score < 3:
         return None
 
     sl = price - atr*1.5 if direction=="LONG" else price + atr*1.5
@@ -192,26 +181,41 @@ async def analyze_symbol(session, symbol, btc15, news):
 # ==============================
 
 def send_signal(data):
+def send_signal(data):
 
-    activity = min(95, data["score"] * 12)
+    activity = min(95, data["score"] * 15)
 
-    msg = f"""🚀 تنبيه: دخول سيولة مؤسسية ضخمة!
+    # تحديد نص التأثير
+    if "لا يوجد خبر" in data["news"]:
+        impact_text = "محايد ⚖️"
+    else:
+        impact_text = "إيجابي ويدعم الصعود 📈" if data["direction"] == "LONG" else "سلبي ويدعم الهبوط 📉"
+
+    msg = f"""🚀 تنبيه: دخول سيولة مؤسسية محتملة!
 🥇 العملة: {data['symbol']}
-🔥 نسبة النشاط: {activity}% ({'زخم شرائي' if data['direction']=='LONG' else 'ضغط بيعي'})
+🔥 نسبة النشاط: {activity}%
 ⚡ نوع العملية: {data['direction']} {'🟢' if data['direction']=='LONG' else '🔴'}
-📍 Entry: {data['price']:.4f}
-🛡️ S.L   : {data['sl']:.4f}
-🎯 T.P 1 : {data['tp1']:.4f}
-T.P 2 : {data['tp2']:.4f}
-T.P 3 : {data['tp3']:.4f}
-R:R    : 1:4
+
+📍 سعر الدخول: {data['price']:.4f}
+🛡️ وقف الخسارة: {data['sl']:.4f}
+
+🎯 الهدف الأول: {data['tp1']:.4f}
+🎯 الهدف الثاني: {data['tp2']:.4f}
+🎯 الهدف الثالث: {data['tp3']:.4f}
+
+📊 نسبة العائد إلى المخاطرة: 1:4
 ---------------------------------
-📰 رادار الأخبار (News Sentiment):
-💬 آخر خبر: "{data['news']}" ({data['sentiment']})
-📅 أجندة اقتصادية: لا يوجد حدث عالي التأثير حالياً.
-⚠️ نصيحة : التحليل الفني مدعوم بالخبر، لكن احذر من التقلبات المفاجئة.
-❗إدارة المخاطر مسؤوليتك.
+
+📰 رادار الأخبار:
+🗞️ آخر خبر متعلق بالعملة:
+{data['news']}
+
+📊 تأثير الخبر المتوقع:
+{impact_text}
+
+⚠️ تذكير: إدارة المخاطر مسؤوليتك الشخصية.
 """
+
     bot.send_message(CHAT_ID, msg)
 
 # ==============================
@@ -220,37 +224,55 @@ R:R    : 1:4
 
 async def run():
 
-    print("=== Starting Market Scan ===")
+    print("=== Market Scan ===")
 
     async with aiohttp.ClientSession() as session:
 
         news = get_news()
-        btc15 = await fetch_klines(session, "BTCUSDT", "15m")
-        btc15 = calculate_indicators(btc15)
+
+        # تحديد اتجاه السوق من BTC و ETH
+        btc = await fetch_klines(session, "BTCUSDT", "1h")
+        eth = await fetch_klines(session, "ETHUSDT", "1h")
+
+        btc = calculate_indicators(btc)
+        eth = calculate_indicators(eth)
+
+        if btc["close"].iloc[-1] > btc["ema200"].iloc[-1] and \
+           eth["close"].iloc[-1] > eth["ema200"].iloc[-1]:
+            market_bias = "BULL"
+        elif btc["close"].iloc[-1] < btc["ema200"].iloc[-1] and \
+             eth["close"].iloc[-1] < eth["ema200"].iloc[-1]:
+            market_bias = "BEAR"
+        else:
+            print("Market Neutral")
+            return
 
         opportunities = []
 
         for sym in SYMBOLS:
-
-            result = await analyze_symbol(session, sym, btc15, news)
-
+            result = await analyze_symbol(session, sym, market_bias, news)
             if result:
                 opportunities.append(result)
-
             await asyncio.sleep(0.2)
 
-        # هنا فقط يكون الشرط
-        if opportunities:
-            opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
-            top_opportunities = opportunities[:2]
+        opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
 
-            for opp in top_opportunities:
-                send_signal(opp)
+        sent = 0
+        now = time.time()
 
-        else:
-            print("No opportunities this round")
+        for opp in opportunities:
 
-        print("Scan finished")
+            if opp["symbol"] in active_trades and now - active_trades[opp["symbol"]] < 3600:
+                continue
+
+            send_signal(opp)
+            active_trades[opp["symbol"]] = now
+            sent += 1
+
+            if sent == 2:
+                break
+
+        print("Scan Done")
 
 # ==============================
 
@@ -260,4 +282,4 @@ if __name__ == "__main__":
             asyncio.run(run())
         except Exception as e:
             print("Error:", e)
-        time.sleep(300)
+        time.sleep(3600)
