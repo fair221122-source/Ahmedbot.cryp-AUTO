@@ -130,7 +130,6 @@ async def analyze_symbol(session, symbol, btc15, news):
     score = 0
     direction = None
 
-    # 4H Trend (أساسي)
     if price > df4h["ema200"].iloc[-1]:
         direction = "LONG"
         score += 2
@@ -138,31 +137,26 @@ async def analyze_symbol(session, symbol, btc15, news):
         direction = "SHORT"
         score += 2
 
-    # 1H Confirmation
     if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
         score += 1
     if direction == "SHORT" and price < df1h["ema200"].iloc[-1]:
         score += 1
 
-    # 15m Structure Break
     if direction == "LONG" and df15["high"].iloc[-1] > df15["high"].iloc[-5]:
         score += 1
     if direction == "SHORT" and df15["low"].iloc[-1] < df15["low"].iloc[-5]:
         score += 1
 
-    # Volume Spike
     if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
         score += 1
 
-    # SMT Bonus
     if smt_divergence(df15, btc15):
         score += 1
 
-    # حد أدنى واقعي
-    if score < 3:
+    # تخفيف الفلتر
+    if score < 1:
         return None
 
-    # إدارة المخاطر
     sl = price - atr*1.5 if direction=="LONG" else price + atr*1.5
     risk = abs(price - sl)
 
@@ -218,7 +212,6 @@ R:R    : 1:4
 ⚠️ نصيحة : التحليل الفني مدعوم بالخبر، لكن احذر من التقلبات المفاجئة.
 ❗إدارة المخاطر مسؤوليتك.
 """
-
     bot.send_message(CHAT_ID, msg)
 
 # ==============================
@@ -249,11 +242,19 @@ async def run():
             result = await analyze_symbol(session, sym, btc15, news)
 
             if result:
-                print("Opportunity found:", sym)
-                send_signal(result)
-                active_trades[sym] = result
+                opportunities.append(result)
 
             await asyncio.sleep(0.2)
+
+        if opportunities:
+            opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
+            top_opportunities = opportunities[:2]
+
+            for opp in top_opportunities:
+                send_signal(opp)
+                active_trades[opp["symbol"]] = opp
+        else:
+            print("No opportunities this round")
 
         print("Scan finished")
 
