@@ -19,7 +19,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot Running")
 
 def run_server():
-    port = int(os.environ.get("PORT", 9000))
+    port = int(os.environ["PORT"])  # بدون رقم افتراضي
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
