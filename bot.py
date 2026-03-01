@@ -5,20 +5,22 @@ import pandas_ta as ta
 import os
 import requests
 import threading
+import json
 from telegram import Bot
+from telegram.error import TelegramError
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime
 
 # ==============================
-# CONFIG & API KEYS
+# المفاتيح - ضع قيمك هنا مباشرة
 # ==============================
-TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
-CHAT_ID = "986199874"
-CRYPTOPANIC_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f" # تأكد من وضعه هنا
+TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"  
+CHAT_ID = "986199874"        
+CRYPTOPANIC_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f" 
 
 bot = Bot(token=TELEGRAM_TOKEN)
 BASE_URL = "https://fapi.binance.com/fapi/v1/klines"
 
-# قائمة الـ 40 عملة التي تحترم التحليل المؤسسي
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT","MATICUSDT",
     "NEARUSDT","LTCUSDT","UNIUSDT","ATOMUSDT","APTUSDT","SUIUSDT","OPUSDT","ARBUSDT","INJUSDT","TIAUSDT",
@@ -26,124 +28,153 @@ SYMBOLS = [
     "SEIUSDT","JUPUSDT","AAVEUSDT","IMXUSDT","DYDXUSDT","STRKUSDT","MANAUSDT","SANDUSDT","EGLDUSDT","THETAUSDT"
 ]
 
-# ==============================
-# 📡 RADAR: CRYPTOPANIC NEWS
-# ==============================
-def get_radar_news(symbol):
+def get_news(symbol):
     try:
         coin = symbol.replace("USDT", "")
         url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_KEY}&currencies={coin}&filter=hot"
-        response = requests.get(url, timeout=5).json()
-        results = response.get("results", [])
-        
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200:
+            return "✅ لا توجد أخبار مؤثرة حالياً", 0
+        data = res.json()
+        results = data.get("results", [])
         if not results:
-            return "رادار الأخبار: هدوء في التدفق الإخباري حالياً.", 0
-        
-        latest_news = results[0]['title']
+            return "✅ لا توجد أخبار مؤثرة حالياً", 0
+        news = results[0]['title']
         votes = results[0].get('votes', {})
-        # حساب قوة الخبر بناءً على التصويت
         sentiment = (votes.get('positive', 0) * 2) - votes.get('negative', 0)
-        
-        status = "🟢 إيجابي" if sentiment > 0 else "🔴 سلبي/حذر"
-        return f"{status} | {latest_news}", sentiment
+        if sentiment > 5:
+            status = "🟢 إيجابي"
+        elif sentiment < -5:
+            status = "🔴 سلبي"
+        else:
+            status = "⚪ محايد"
+        return f"{status} | {news[:60]}...", sentiment
     except:
-        return "رادار الأخبار: تعذر جلب البيانات (تحقق من الـ API).", 0
+        return "✅ لا توجد أخبار مؤثرة حالياً", 0
 
-# ==============================
-# 🏗️ CORE ENGINE (4H -> 1H -> 15M)
-# ==============================
-async def get_data(session, symbol, interval, limit=50):
+async def fetch_klines(session, symbol, interval, limit=50):
     params = {'symbol': symbol, 'interval': interval, 'limit': limit}
     try:
         async with session.get(BASE_URL, params=params, timeout=10) as resp:
-            d = await resp.json()
-            df = pd.DataFrame(d, columns=['t','o','h','l','c','v','ct','qa','nt','tb','tq','i'])
-            return df[['o','h','l','c','v']].astype(float)
-    except: return None
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            df = pd.DataFrame(data, columns=['t','o','h','l','c','v','ct','qa','nt','tb','tq','i'])
+            for col in ['o','h','l','c']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df[['o','h','l','c']].dropna()
+    except:
+        return None
 
-async def analyze(session, symbol):
-    # 1. الاتجاه (4H)
-    df4h = await get_data(session, symbol, "4h", 20)
-    if df4h is None: return None
-    ema = ta.ema(df4h['c'], length=20).iloc[-1]
-    trend = "LONG" if df4h['c'].iloc[-1] > ema else "SHORT"
+def detect_fvg(df, trend):
+    try:
+        if len(df) < 5:
+            return None
+        if trend == "LONG":
+            for i in range(2, 4):
+                if df['l'].iloc[-1] > df['h'].iloc[-i-1]:
+                    return (df['h'].iloc[-i-1] + df['l'].iloc[-1]) / 2
+        else:
+            for i in range(2, 4):
+                if df['h'].iloc[-1] < df['l'].iloc[-i-1]:
+                    return (df['l'].iloc[-i-1] + df['h'].iloc[-1]) / 2
+        return None
+    except:
+        return None
 
-    # 2. التحليل والسيولة (1H)
-    df1h = await get_data(session, symbol, "1h", 50)
-    if df1h is None: return None
-    
-    # رصد الفجوة (FVG)
-    fvg_entry = None
-    if trend == "LONG":
-        if df1h['l'].iloc[-1] > df1h['h'].iloc[-3]: fvg_entry = df1h['h'].iloc[-3]
-    else:
-        if df1h['h'].iloc[-1] < df1h['l'].iloc[-3]: fvg_entry = df1h['l'].iloc[-3]
+async def analyze_symbol(session, symbol):
+    try:
+        df4h = await fetch_klines(session, symbol, "4h", 30)
+        if df4h is None or len(df4h) < 20:
+            return None
+        ema = ta.ema(df4h['c'], length=20)
+        if ema is None or len(ema) == 0:
+            return None
+        trend = "LONG" if df4h['c'].iloc[-1] > ema.iloc[-1] else "SHORT"
+        df1h = await fetch_klines(session, symbol, "1h", 30)
+        if df1h is None:
+            return None
+        entry = detect_fvg(df1h, trend)
+        if entry is None:
+            return None
+        df15m = await fetch_klines(session, symbol, "15m", 30)
+        if df15m is None or len(df15m) < 20:
+            return None
+        atr = ta.atr(df15m['h'], df15m['l'], df15m['c'], length=14)
+        if atr is None or len(atr) == 0:
+            return None
+        atr_val = atr.iloc[-1]
+        if atr_val <= 0:
+            return None
+        news_text, sentiment = get_news(symbol)
+        sl = entry - (atr_val * 2.5) if trend == "LONG" else entry + (atr_val * 2.5)
+        risk = abs(entry - sl)
+        rr = 5.0 if abs(sentiment) > 8 else 4.0
+        tp = entry + (risk * rr) if trend == "LONG" else entry - (risk * rr)
+        confidence = 85
+        if abs(sentiment) > 5:
+            confidence += 5
+        return {
+            'symbol': symbol,
+            'trend': trend,
+            'entry': round(entry, 5),
+            'sl': round(sl, 5),
+            'tp': round(tp, 5),
+            'rr': rr,
+            'news': news_text,
+            'confidence': confidence
+        }
+    except:
+        return None
 
-    if not fvg_entry: return None
-
-    # 3. الدخول والأهداف (15M)
-    df15m = await get_data(session, symbol, "15m", 30)
-    if df15m is None: return None
-    atr = ta.atr(df15m['h'], df15m['l'], df15m['c']).iloc[-1]
-
-    # جلب رادار الأخبار لهذه العملة
-    news_text, sentiment_score = get_radar_news(symbol)
-
-    entry = fvg_entry
-    sl = entry - (atr * 2.5) if trend == "LONG" else entry + (atr * 2.5)
-    risk = abs(entry - sl)
-    
-    # R:R ذكي بين 1:3 و 1:8
-    rr = 4.0 if abs(sentiment_score) < 10 else 6.0 
-    tp = entry + (risk * rr) if trend == "LONG" else entry - (risk * rr)
-
-    return {
-        'symbol': symbol, 'type': f"🟢 {trend} (Limit Order)",
-        'entry': entry, 'sl': sl, 'tp': tp, 'rr': rr,
-        'news': news_text, 'score': 85 + (5 if abs(sentiment_score) > 5 else 0)
-    }
-
-# ==============================
-# 🚀 MAIN LOOP & MESSAGING
-# ==============================
 async def main_loop():
     async with aiohttp.ClientSession() as session:
         while True:
-            print("Analyzing the market...", flush=True)
-            for sym in SYMBOLS:
-                res = await analyze(session, sym)
-                if res:
-                    msg = (
-                        f"🚀 **Signal Alert: Institutional Entry**\n\n"
-                        f"🥇 **Symbol:** `{res['symbol']}`\n"
-                        f"🔥 **Activity Rate:** {res['score']}% (زخم فائق)\n"
-                        f"⚡ **Type:** {res['type']}\n\n"
-                        f"📍 **Entry (FVG Fill):** {res['entry']:.5f}\n"
-                        f"🛡️ **Stop Loss:** {res['sl']:.5f}\n"
-                        f"🎯 **Target (Exit):** {res['tp']:.5f}\n\n"
-                        f"⚖️ **R:R:** 1:{res['rr']}\n"
-                        f"📈 **Trend:** High (4H Confirmed)\n"
-                        f"📰 **رادار الأخبار:** {res['news']}\n"
-                        f"💡 **ملاحظة:** تم رصد سيولة مؤسسية؛ الدخول معلق عند الفجوة لضمان حماية الستوب.\n"
-                        f"❗ *إدارة المخاطر مسؤوليتك.*"
-                    )
-                    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-                await asyncio.sleep(1)
+            print(f"\n🔄 بدء تحليل السوق - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            for symbol in SYMBOLS:
+                try:
+                    result = await analyze_symbol(session, symbol)
+                    if result:
+                        arrow = "🟢" if result['trend'] == "LONG" else "🔴"
+                        msg = (
+                            f"⚡ **إشارة تداول - تحليل فني + أخبار** ⚡\n\n"
+                            f"العملة: `{result['symbol']}`\n"
+                            f"الاتجاه: {arrow} {result['trend']}\n"
+                            f"الثقة: {result['confidence']}%\n\n"
+                            f"📍 **الدخول:** `{result['entry']}`\n"
+                            f"🛑 **وقف الخسارة:** `{result['sl']}`\n"
+                            f"🎯 **الهدف:** `{result['tp']}`\n"
+                            f"📊 **نسبة العائد/المخاطرة:** 1:{result['rr']}\n\n"
+                            f"📰 **أخبار:** {result['news']}\n\n"
+                            f"💡 فجوة سعرية (FVG) على الإطار 1 ساعة مع تأكيد الاتجاه من 4 ساعات"
+                        )
+                        try:
+                            await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+                            print(f"✅ تم إرسال إشارة لـ {result['symbol']}")
+                        except TelegramError as e:
+                            print(f"❌ فشل إرسال رسالة: {e}")
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"⚠️ خطأ في {symbol}: {e}")
+                    continue
+            print("✅ اكتمل التحليل. انتظار 5 دقائق...")
             await asyncio.sleep(300)
 
-# سيرفر Render المعتاد
-class HealthHandler(BaseHTTPRequestHandler):
+class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Radar Active")
+        self.wfile.write(b"Bot is running")
+    def log_message(self, format, *args):
+        return
 
-def run_server():
-    port = int(os.environ.get("PORT", 9000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"🌐 Health server running on port {port}")
     server.serve_forever()
 
 if __name__ == "__main__":
-    threading.Thread(target=run_server, daemon=True).start()
+    threading.Thread(target=run_health_server, daemon=True).start()
+    print("🚀 بدء تشغيل بوت التداول...")
     asyncio.run(main_loop())
-
