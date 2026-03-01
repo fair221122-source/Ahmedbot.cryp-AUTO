@@ -241,18 +241,19 @@ async def run():
         opportunities = []
 
         for sym in SYMBOLS:
-            print("Analyzing:", sym)
+    print("Analyzing:", sym)
 
-            if sym in active_trades:
-                continue
+    if sym in active_trades:
+        continue
 
-            result = await analyze_symbol(session, sym, btc15, news)
+    result = await analyze_symbol(session, sym, btc15, news)
 
-            if result:
-    print("Opportunity found:", sym)
-    send_signal(result)
-    active_trades[sym] = result
-            await asyncio.sleep(0.2)
+    if result:
+        print("Opportunity found:", sym)
+        send_signal(result)
+        active_trades[sym] = result
+
+    await asyncio.sleep(0.2)
 
         print("Scan finished")
 
