@@ -253,7 +253,7 @@ async def main_loop():
             await run()
         except Exception as e:
             print("Error:", e)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(300)
 
 if __name__ == "__main__":
     threading.Thread(target=start_server, daemon=True).start()
