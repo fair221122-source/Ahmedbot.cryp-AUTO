@@ -263,10 +263,14 @@ async def run():
 
         print("Scan Done")
 
-if __name__ == "__main__":
+async def main_loop():
     while True:
         try:
-            asyncio.run(run())
+            print("=== Market Scan ===")
+            await run()
         except Exception as e:
             print("Error:", e)
-        time.sleep(3600)
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main_loop())
