@@ -252,12 +252,10 @@ if opportunities:
     for opp in top_opportunities:
         send_signal(opp)
 
-    active_trades.clear()
-
 else:
     print("No opportunities this round")
 
-        print("Scan finished")
+print("Scan finished")
 
 # ==============================
 
