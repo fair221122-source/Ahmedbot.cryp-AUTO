@@ -236,7 +236,7 @@ async def run():
 
         for opp in opportunities:
 
-            if opp["symbol"] in active_trades and now - active_trades[opp["symbol"]] < 3600:
+            if opp["symbol"] in active_trades and now - active_trades[opp["symbol"]] < 300:
                 continue
 
             send_signal(opp)
