@@ -24,11 +24,12 @@ def run_server():
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
+
 # ==============================
 # CONFIG
 # ==============================
 
-TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
+TELEGRAM_TOKEN = 8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
 CHAT_ID = "986199874"
 CRYPTOPANIC_API_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
 
@@ -116,9 +117,7 @@ async def analyze_symbol(session, symbol, market_bias, news):
         return None
 
     score = 0
-    direction = None
 
-    # اتجاه السوق العام من BTC و ETH
     if market_bias == "BULL":
         direction = "LONG"
     elif market_bias == "BEAR":
@@ -126,19 +125,16 @@ async def analyze_symbol(session, symbol, market_bias, news):
     else:
         return None
 
-    # توافق الاتجاه مع EMA200
     if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
         score += 2
     if direction == "SHORT" and price < df1h["ema200"].iloc[-1]:
         score += 2
 
-    # كسر EMA50
     if direction == "LONG" and price > df15["ema50"].iloc[-1]:
         score += 1
     if direction == "SHORT" and price < df15["ema50"].iloc[-1]:
         score += 1
 
-    # حجم تداول مرتفع
     if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
         score += 1
 
@@ -154,12 +150,10 @@ async def analyze_symbol(session, symbol, market_bias, news):
 
     coin = symbol.replace("USDT","")
     coin_news = "لا يوجد خبر مؤثر حالياً."
-    sentiment = "Neutral ⚖️"
 
     for n in news:
         if coin.lower() in n["title"].lower():
             coin_news = n["title"]
-            sentiment = "Positive ✅" if direction=="LONG" else "Negative 🔴"
             break
 
     return {
@@ -171,8 +165,7 @@ async def analyze_symbol(session, symbol, market_bias, news):
         "tp3": tp3,
         "direction": direction,
         "score": score,
-        "news": coin_news,
-        "sentiment": sentiment
+        "news": coin_news
     }
 
 # ==============================
@@ -180,11 +173,9 @@ async def analyze_symbol(session, symbol, market_bias, news):
 # ==============================
 
 def send_signal(data):
-def send_signal(data):
 
     activity = min(95, data["score"] * 15)
 
-    # تحديد نص التأثير
     if "لا يوجد خبر" in data["news"]:
         impact_text = "محايد ⚖️"
     else:
@@ -229,7 +220,6 @@ async def run():
 
         news = get_news()
 
-        # تحديد اتجاه السوق من BTC و ETH
         btc = await fetch_klines(session, "BTCUSDT", "1h")
         eth = await fetch_klines(session, "ETHUSDT", "1h")
 
@@ -272,8 +262,6 @@ async def run():
                 break
 
         print("Scan Done")
-
-# ==============================
 
 if __name__ == "__main__":
     while True:
