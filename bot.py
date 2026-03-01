@@ -236,8 +236,7 @@ async def run():
         for sym in SYMBOLS:
             print("Analyzing:", sym)
 
-            if sym in active_trades:
-                continue
+
 
             result = await analyze_symbol(session, sym, btc15, news)
 
@@ -251,8 +250,9 @@ async def run():
             top_opportunities = opportunities[:2]
 
             for opp in top_opportunities:
-                send_signal(opp)
-                active_trades[opp["symbol"]] = opp
+    send_signal(opp)
+
+active_trades.clear()
         else:
             print("No opportunities this round")
 
