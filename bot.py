@@ -1,4 +1,5 @@
-print("NEW VERSION FROM PHONE")
+print("NEW VERSION FIXED")
+
 import asyncio
 import aiohttp
 import pandas as pd
@@ -25,12 +26,11 @@ def start_server():
     print(f"Server running on port {port}")
     server.serve_forever()
 
-
 # ==============================
 # CONFIG
 # ==============================
 
-TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
+TELEGRAM_TOKEN = "8524445307:"AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
 CHAT_ID = "986199874"
 CRYPTOPANIC_API_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
 
@@ -56,6 +56,10 @@ async def fetch_klines(session, symbol, interval, limit=200):
     url = f"{BASE_URL}?symbol={symbol}&interval={interval}&limit={limit}"
     async with session.get(url) as resp:
         data = await resp.json()
+
+        if not isinstance(data, list):
+            return None
+
         df = pd.DataFrame(data, columns=[
             "time","open","high","low","close","volume",
             "c1","c2","c3","c4","c5","c6"
@@ -119,12 +123,7 @@ async def analyze_symbol(session, symbol, market_bias, news):
 
     score = 0
 
-    if market_bias == "BULL":
-        direction = "LONG"
-    elif market_bias == "BEAR":
-        direction = "SHORT"
-    else:
-        return None
+    direction = "LONG" if market_bias == "BULL" else "SHORT"
 
     if direction == "LONG" and price > df1h["ema200"].iloc[-1]:
         score += 2
@@ -139,7 +138,8 @@ async def analyze_symbol(session, symbol, market_bias, news):
     if df15["volume"].iloc[-1] > df15["volume"].rolling(20).mean().iloc[-1]:
         score += 1
 
-    if score < 3:
+    # تم تخفيف الشرط ليعطي إشارات أكثر
+    if score < 2:
         return None
 
     sl = price - atr*1.5 if direction=="LONG" else price + atr*1.5
@@ -175,47 +175,31 @@ async def analyze_symbol(session, symbol, market_bias, news):
 
 def send_signal(data):
 
-    activity = min(95, data["score"] * 15)
+    activity = min(95, data["score"] * 20)
 
-    if "لا يوجد خبر" in data["news"]:
-        impact_text = "محايد ⚖️"
-    else:
-        impact_text = "إيجابي ويدعم الصعود 📈" if data["direction"] == "LONG" else "سلبي ويدعم الهبوط 📉"
+    msg = f"""🚀 تنبيه صفقة جديدة
 
-    msg = f"""🚀 تنبيه: دخول سيولة مؤسسية محتملة!
-🥇 العملة: {data['symbol']}
-🔥 نسبة النشاط: {activity}%
-⚡ نوع العملية: {data['direction']} {'🟢' if data['direction']=='LONG' else '🔴'}
+العملة: {data['symbol']}
+النوع: {data['direction']}
 
-📍 سعر الدخول: {data['price']:.4f}
-🛡️ وقف الخسارة: {data['sl']:.4f}
+سعر الدخول: {data['price']:.4f}
+وقف الخسارة: {data['sl']:.4f}
 
-🎯 الهدف الأول: {data['tp1']:.4f}
-🎯 الهدف الثاني: {data['tp2']:.4f}
-🎯 الهدف الثالث: {data['tp3']:.4f}
+الهدف 1: {data['tp1']:.4f}
+الهدف 2: {data['tp2']:.4f}
+الهدف 3: {data['tp3']:.4f}
 
-📊 نسبة العائد إلى المخاطرة: 1:4
----------------------------------
-
-📰 رادار الأخبار:
-🗞️ آخر خبر متعلق بالعملة:
+رادار الأخبار:
 {data['news']}
-
-📊 تأثير الخبر المتوقع:
-{impact_text}
-
-⚠️ تذكير: إدارة المخاطر مسؤوليتك الشخصية.
 """
 
-    bot.send_message(CHAT_ID, msg)
+    bot.send_message(chat_id=CHAT_ID, text=msg)
 
 # ==============================
 # MAIN LOOP
 # ==============================
 
 async def run():
-
-    print("=== Market Scan ===")
 
     async with aiohttp.ClientSession() as session:
 
@@ -227,15 +211,15 @@ async def run():
         btc = calculate_indicators(btc)
         eth = calculate_indicators(eth)
 
+        if btc is None or eth is None:
+            return
+
+        # حتى لو السوق محايد سيعمل LONG
         if btc["close"].iloc[-1] > btc["ema200"].iloc[-1] and \
            eth["close"].iloc[-1] > eth["ema200"].iloc[-1]:
             market_bias = "BULL"
-        elif btc["close"].iloc[-1] < btc["ema200"].iloc[-1] and \
-             eth["close"].iloc[-1] < eth["ema200"].iloc[-1]:
-            market_bias = "BEAR"
         else:
-            print("Market Neutral")
-            return
+            market_bias = "BULL"
 
         opportunities = []
 
@@ -243,7 +227,7 @@ async def run():
             result = await analyze_symbol(session, sym, market_bias, news)
             if result:
                 opportunities.append(result)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
 
         opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
 
@@ -262,21 +246,15 @@ async def run():
             if sent == 2:
                 break
 
-        print("Scan Done")
-
 async def main_loop():
     print("Bot Started Successfully")
     while True:
         try:
-            print("=== Market Scan ===")
             await run()
         except Exception as e:
             print("Error:", e)
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    # تشغيل السيرفر في خيط منفصل
     threading.Thread(target=start_server, daemon=True).start()
-    # تشغيل البوت
     asyncio.run(main_loop())
-    
