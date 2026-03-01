@@ -29,7 +29,7 @@ threading.Thread(target=run_server, daemon=True).start()
 # CONFIG
 # ==============================
 
-TELEGRAM_TOKEN = 8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
+TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
 CHAT_ID = "986199874"
 CRYPTOPANIC_API_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
 
