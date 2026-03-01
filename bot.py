@@ -245,16 +245,17 @@ async def run():
 
             await asyncio.sleep(0.2)
 
-        if opportunities:
-            opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
-            top_opportunities = opportunities[:2]
+if opportunities:
+    opportunities = sorted(opportunities, key=lambda x: x["score"], reverse=True)
+    top_opportunities = opportunities[:2]
 
-            for opp in top_opportunities:
-    send_signal(opp)
+    for opp in top_opportunities:
+        send_signal(opp)
 
-active_trades.clear()
-        else:
-            print("No opportunities this round")
+    active_trades.clear()
+
+else:
+    print("No opportunities this round")
 
         print("Scan finished")
 
