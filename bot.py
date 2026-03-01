@@ -18,12 +18,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot Running")
 
-def run_server():
-    port = int(os.environ["PORT"])
+def start_server():
+    port = int(os.environ.get("PORT", 9000))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Server running on port {port}")
     server.serve_forever()
 
-threading.Thread(target=run_server, daemon=True).start()
 
 # ==============================
 # CONFIG
@@ -264,6 +264,7 @@ async def run():
         print("Scan Done")
 
 async def main_loop():
+    print("Bot Started Successfully")
     while True:
         try:
             print("=== Market Scan ===")
@@ -273,4 +274,8 @@ async def main_loop():
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
+    # تشغيل السيرفر في خيط منفصل
+    threading.Thread(target=start_server, daemon=True).start()
+    # تشغيل البوت
     asyncio.run(main_loop())
+    
