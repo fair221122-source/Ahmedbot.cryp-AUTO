@@ -19,12 +19,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot Running")
 
 def run_server():
-    port = int(os.environ["PORT"])  # بدون رقم افتراضي
+    port = int(os.environ["PORT"])
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
-
 # ==============================
 # CONFIG
 # ==============================
