@@ -38,9 +38,13 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is Live and Analyzing...")
 
 def start_server():
+    # Render يرسل المنفذ تلقائياً عبر متغيرات البيئة
     port = int(os.environ.get("PORT", 9000))
+    # يجب استخدام "0.0.0.0" وليس "127.0.0.1" لكي يراه Render
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"✅ Server is listening on port {port}")
     server.serve_forever()
+
 
 # ==============================
 # SMART NEWS RADAR (Logic)
