@@ -1,3 +1,4 @@
+print("NEW VERSION FROM PHONE")
 import asyncio
 import aiohttp
 import pandas as pd
