@@ -175,6 +175,7 @@ def run_health_server():
     server.serve_forever()
 
 if __name__ == "__main__":
+    print("البوت بدأ التشغيل")
     threading.Thread(target=run_health_server, daemon=True).start()
     print("🚀 بدء تشغيل بوت التداول...")
     asyncio.run(main_loop())
