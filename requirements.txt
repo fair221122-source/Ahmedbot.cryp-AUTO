@@ -1,5 +1,4 @@
-aiohttp==3.9.1
-pandas==2.1.4
-pandas-ta==0.3.14b0
 python-telegram-bot==20.7
-requests==2.31.0
+aiohttp
+pandas
+pandas_ta
