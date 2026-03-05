@@ -1,251 +1,367 @@
-import asyncio
-import aiohttp
-import pandas as pd
-import pandas_ta as ta
 import os
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Bot
-from telegram.constants import ParseMode
-import threading
+import time
+import logging
+import requests
+import pandas as pd
+import numpy as np
+import telebot
+from telebot import types
 
-# ==============================
-# المفاتيح
-# ==============================
-TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
-CHAT_ID = "986199874"
-CRYPTOPANIC_KEY = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
+# ================== إعداد اللوج ==================
+logging.basicConfig(level=logging.CRITICAL)
 
-bot = Bot(token=TELEGRAM_TOKEN)
-BASE_URL = "https://fapi.binance.com/fapi/v1/klines"
+# ================== توكن البوت ==================
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # ← ضع التوكن في Render Environment
+bot = telebot.TeleBot(BOT_TOKEN)
 
-SYMBOLS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT","MATICUSDT",
-    "NEARUSDT","LTCUSDT","UNIUSDT","ATOMUSDT","APTUSDT","SUIUSDT","OPUSDT","ARBUSDT","INJUSDT","TIAUSDT",
-    "RNDRUSDT","STXUSDT","FILUSDT","ICPUSDT","BCHUSDT","FETUSDT","GALAUSDT","ORDIUSDT","PYTHUSDT","WLDUSDT",
-    "SEIUSDT","JUPUSDT","AAVEUSDT","IMXUSDT","DYDXUSDT","STRKUSDT","MANAUSDT","SANDUSDT","EGLDUSDT","THETAUSDT"
-]
+# ================== قائمة 20 عملة عالية السيولة (Futures) ==================
+def top_20_liquid_coins():
+    return [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+        "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+        "MATICUSDT", "NEARUSDT", "TRXUSDT", "LTCUSDT", "UNIUSDT",
+        "ARBUSDT", "OPUSDT", "SUIUSDT", "FILUSDT", "STXUSDT"
+    ]
 
-# ==============================
-# الأخبار العربية (حدث + نتيجة + تأثير)
-# ==============================
-async def get_news(session, symbol):
-    try:
-        coin = symbol.replace("USDT", "")
-        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_KEY}&currencies={coin}&filter=hot"
+# ================== جلب البيانات من Binance Futures ==================
+def fetch_klines(symbol, interval="1h", limit=200):
+    urls = [
+        "https://fapi.binance.com/fapi/v1/klines",
+        "https://fapi1.binance.com/fapi/v1/klines",
+        "https://fapi2.binance.com/fapi/v1/klines"
+    ]
 
-        async with session.get(url, timeout=10) as res:
-            if res.status != 200:
-                return "لا توجد أخبار مؤثرة على العملة حالياً", 0
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
 
-            data = await res.json()
-            results = data.get("results", [])
-            if not results:
-                return "لا توجد أخبار مؤثرة على العملة حالياً", 0
+    for url in urls:
+        for attempt in range(3):
+            try:
+                r = requests.get(url, params=params, timeout=10)
+                data = r.json()
 
-            news_title = results[0]['title']
+                if isinstance(data, dict) and data.get("code"):
+                    time.sleep(0.3)
+                    continue
 
-            votes = results[0].get('votes', {})
-            sentiment = (votes.get('positive', 0) * 2) - votes.get('negative', 0)
+                df = pd.DataFrame(data, columns=[
+                    "t","o","h","l","c","v","ct","qv","n","tbb","tbq","i"
+                ])
+                df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
+                return df[["o","h","l","c","v"]]
 
-            if sentiment > 5:
-                status = "🟢 خبر إيجابي"
-            elif sentiment < -5:
-                status = "🔴 خبر سلبي"
-            else:
-                status = "⚪ خبر محايد"
+            except Exception:
+                time.sleep(0.3)
+                continue
 
-            translate_url = "https://api.mymemory.translated.net/get"
-            params = {"q": news_title, "langpair": "en|ar"}
+    print(f"⚠️ فشل في جلب البيانات: {symbol}")
+    return None
 
-            async with session.get(translate_url, params=params) as t_res:
-                t_data = await t_res.json()
-                translated = t_data.get("responseData", {}).get("translatedText", news_title)
+# ================== أدوات تحليل الشموع ==================
+def calc_candle_features(df):
+    o = df["o"]
+    h = df["h"]
+    l = df["l"]
+    c = df["c"]
+    body = (c - o).abs()
+    upper_wick = h - np.maximum(o, c)
+    lower_wick = np.minimum(o, c) - l
+    return body, upper_wick, lower_wick
 
-            event = translated
+def detect_trend_1h(df_1h, lookback=50):
+    df = df_1h.iloc[-lookback:].copy()
+    highs = df["h"]
+    lows = df["l"]
 
-            if any(word in event for word in ["ارتفاع", "زيادة", "شراء", "تدفقات", "انتعاش"]):
-                effect = "النتيجة: الخبر يشير إلى دعم صعودي محتمل."
-            elif any(word in event for word in ["انخفاض", "بيع", "خروج", "تحذير", "هبوط"]):
-                effect = "النتيجة: الخبر يشير إلى ضغط بيعي محتمل."
-            else:
-                effect = "النتيجة: التأثير غير واضح لكنه يستحق المتابعة."
+    if highs.iloc[-1] > highs.mean() and lows.iloc[-1] > lows.mean():
+        trend = "bull"
+    elif highs.iloc[-1] < highs.mean() and lows.iloc[-1] < lows.mean():
+        trend = "bear"
+    else:
+        trend = "side"
 
-            final_text = f"{status} — {event}. {effect}"
+    last5 = df.iloc[-5:]
+    body_last5, _, _ = calc_candle_features(last5)
+    avg_body_last5 = body_last5.mean()
+    avg_body_all = (df["c"] - df["o"]).abs().mean()
 
-            return final_text, sentiment
+    momentum = "strong" if avg_body_last5 > avg_body_all else "weak"
 
-    except Exception as e:
-        print("News Error:", e)
-        return "لا توجد أخبار مؤثرة على العملة حالياً", 0
+    desc_parts = []
+    if trend == "bull":
+        desc_parts.append("اتجاه صاعد")
+    elif trend == "bear":
+        desc_parts.append("اتجاه هابط")
+    else:
+        desc_parts.append("اتجاه جانبي")
 
-# ==============================
-# جلب بيانات Binance
-# ==============================
-async def fetch_klines(session, symbol, interval, limit=50):
-    params = {'symbol': symbol, 'interval': interval, 'limit': limit}
-    try:
-        async with session.get(BASE_URL, params=params, timeout=10) as resp:
-            if resp.status != 200:
-                return None
+    if momentum == "strong":
+        desc_parts.append("زخم قوي")
+    else:
+        desc_parts.append("زخم ضعيف")
 
-            data = await resp.json()
-            df = pd.DataFrame(data, columns=['t','o','h','l','c','v','ct','qa','nt','tb','tq','i'])
+    description = " + ".join(desc_parts)
+    return trend, momentum, description
 
-            for col in ['o','h','l','c']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            return df[['o','h','l','c']].dropna()
-
-    except Exception as e:
-        print("Klines Error:", e)
+def analyze_symbol_1h(symbol):
+    df_1h = fetch_klines(symbol, "1h", 200)
+    if df_1h is None or len(df_1h) < 60:
         return None
+    trend, momentum, desc = detect_trend_1h(df_1h, lookback=50)
+    last_close = df_1h["c"].iloc[-1]
+    return {
+        "symbol": symbol,
+        "trend": trend,
+        "momentum": momentum,
+        "description": desc,
+        "last_price": last_close
+    }
 
-# ==============================
-# كشف فجوة FVG
-# ==============================
-def detect_fvg(df, trend):
-    try:
-        if len(df) < 5:
-            return None
+# ================== تحليل السوق العام (BTC / ETH فقط) ==================
+def analyze_market_overview():
+    symbols = {
+        "BTCUSDT": "Bitcoin",
+        "ETHUSDT": "Ethereum"
+    }
+    results = {}
+    for sym, name in symbols.items():
+        info = analyze_symbol_1h(sym)
+        if info:
+            results[name] = info
 
-        if trend == "LONG":
-            for i in range(2, 4):
-                if df['l'].iloc[-1] > df['h'].iloc[-i-1]:
-                    return (df['h'].iloc[-i-1] + df['l'].iloc[-1]) / 2
+    bias = "neutral"
+    comment = "صورة السوق متوازنة حالياً."
 
+    btc = results.get("Bitcoin")
+    eth = results.get("Ethereum")
+
+    if btc and eth:
+        bull_count = sum(1 for x in [btc, eth] if x["trend"] == "bull")
+        bear_count = sum(1 for x in [btc, eth] if x["trend"] == "bear")
+        if bull_count == 2:
+            bias = "bullish"
+            comment = "الكريبتو يميل للصعود خلال الـ 24 ساعة القادمة."
+        elif bear_count == 2:
+            bias = "bearish"
+            comment = "الكريبتو يميل للهبوط خلال الـ 24 ساعة القادمة."
         else:
-            for i in range(2, 4):
-                if df['h'].iloc[-1] < df['l'].iloc[-i-1]:
-                    return (df['l'].iloc[-i-1] + df['h'].iloc[-1]) / 2
+            bias = "neutral"
+            comment = "لا يوجد اتجاه واضح قوي للكريبتو حالياً."
 
-        return None
+    return {
+        "assets": results,
+        "market_bias_24h": bias,
+        "comment": comment
+    }
 
-    except Exception as e:
-        print("FVG Error:", e)
-        return None
+# ================== أفضل 5 عملات نشطة ==================
+def analyze_top_coins(symbols):
+    analyzed = []
+    for sym in symbols:
+        info = analyze_symbol_1h(sym)
+        if not info:
+            continue
+        score = 0
+        if info["trend"] in ["bull", "bear"]:
+            score += 2
+        if info["momentum"] == "strong":
+            score += 2
+        else:
+            score += 1
+        info["score"] = score
+        analyzed.append(info)
+        time.sleep(0.05)
+    analyzed = sorted(analyzed, key=lambda x: x["score"], reverse=True)
+    return analyzed[:5]
 
-# ==============================
-# تحليل العملة
-# ==============================
-async def analyze_symbol(session, symbol):
-    try:
-        df4h = await fetch_klines(session, symbol, "4h", 30)
-        if df4h is None or len(df4h) < 20:
-            return None
+# ================== منطق دخول على 15m ==================
+def detect_entry_15m(df_15m, trend):
+    last = df_15m.iloc[-5:]
+    body, upper, lower = calc_candle_features(last)
 
-        ema = ta.ema(df4h['c'], length=20)
-        if ema is None or len(ema) == 0:
-            return None
+    if trend == "bull":
+        for i in range(len(last)-1, -1, -1):
+            if lower.iloc[i] > body.iloc[i] * 1.5 and last["c"].iloc[i] > last["o"].iloc[i]:
+                return {
+                    "type": "long",
+                    "entry_type": "Market",
+                    "entry_price": last["c"].iloc[i],
+                    "reason": "دخول من منطقة طلب مع شمعة رفض هبوط على فريم 15 دقيقة"
+                }
 
-        trend = "LONG" if df4h['c'].iloc[-1] > ema.iloc[-1] else "SHORT"
+    if trend == "bear":
+        for i in range(len(last)-1, -1, -1):
+            if upper.iloc[i] > body.iloc[i] * 1.5 and last["c"].iloc[i] < last["o"].iloc[i]:
+                return {
+                    "type": "short",
+                    "entry_type": "Market",
+                    "entry_price": last["c"].iloc[i],
+                    "reason": "دخول من منطقة عرض مع شمعة رفض صعود على فريم 15 دقيقة"
+                }
 
-        df1h = await fetch_klines(session, symbol, "1h", 30)
-        if df1h is None:
-            return None
+    return None
 
-        entry = detect_fvg(df1h, trend)
-        if entry is None:
-            return None
+# ================== البحث عن أفضل صفقتين ==================
+def find_best_trades(symbols):
+    candidates = []
+    for sym in symbols:
+        df_1h = fetch_klines(sym, "1h", 200)
+        df_15m = fetch_klines(sym, "15m", 200)
+        if df_1h is None or df_15m is None:
+            continue
+        if len(df_1h) < 60 or len(df_15m) < 50:
+            continue
 
-        df15m = await fetch_klines(session, symbol, "15m", 30)
-        if df15m is None or len(df15m) < 20:
-            return None
+        trend, momentum, desc = detect_trend_1h(df_1h, lookback=50)
+        if trend == "side":
+            continue
 
-        atr = ta.atr(df15m['h'], df15m['l'], df15m['c'], length=14)
-        if atr is None or len(atr) == 0:
-            return None
+        entry = detect_entry_15m(df_15m, trend)
+        if not entry:
+            continue
 
-        atr_val = atr.iloc[-1]
-        if atr_val <= 0:
-            return None
+        if trend == "bull":
+            sl = entry["entry_price"] * 0.99
+            tp = entry["entry_price"] * 1.03
+        else:
+            sl = entry["entry_price"] * 1.01
+            tp = entry["entry_price"] * 0.97
 
-        news_text, sentiment = await get_news(session, symbol)
+        risk = abs(entry["entry_price"] - sl)
+        reward = abs(tp - entry["entry_price"])
+        rr = reward / risk if risk > 0 else 0
 
-        sl = entry - (atr_val * 2.5) if trend == "LONG" else entry + (atr_val * 2.5)
-        risk = abs(entry - sl)
-        rr = 5.0 if abs(sentiment) > 8 else 4.0
-        tp = entry + (risk * rr) if trend == "LONG" else entry - (risk * rr)
+        if rr < 3:
+            continue
 
-        confidence = 85
-        if abs(sentiment) > 5:
-            confidence += 5
+        score = 0
+        if momentum == "strong":
+            score += 2
+        else:
+            score += 1
 
-        return {
-            'symbol': symbol,
-            'trend': trend,
-            'entry': round(entry, 5),
-            'sl': round(sl, 5),
-            'tp': round(tp, 5),
-            'rr': rr,
-            'news': news_text,
-            'confidence': confidence
-        }
+        candidates.append({
+            "symbol": sym,
+            "trend": trend,
+            "momentum": momentum,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "rr": rr,
+            "score": score
+        })
+        time.sleep(0.05)
 
-    except Exception as e:
-        print("Analyze Error:", e)
-        return None
+    candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+    return candidates[:2]
 
-# ==============================
-# الحلقة الرئيسية
-# ==============================
-async def main_loop():
-    async with aiohttp.ClientSession() as session:
-        while True:
-            print(f"\n🔄 بدء تحليل السوق - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# ================== بناء رسالة التحليل ==================
+def build_analysis_message():
+    market = analyze_market_overview()
+    assets = market["assets"]
+    bias = market["market_bias_24h"]
+    comment = market["comment"]
 
-            for symbol in SYMBOLS:
-                result = await analyze_symbol(session, symbol)
+    msg = "📊 تحليل السوق العام – فريم الساعة (آخر 50 شمعة)\n\n"
 
-                if result:
-                    arrow = "🟢" if result['trend'] == "LONG" else "🔴"
+    btc = assets.get("Bitcoin")
+    eth = assets.get("Ethereum")
 
-                    msg = (
-                        f"⚡ **إشارة تداول - تحليل فني + أخبار** ⚡\n\n"
-                        f"العملة: `{result['symbol']}`\n"
-                        f"الاتجاه: {arrow} {result['trend']}\n"
-                        f"الثقة: {result['confidence']}%\n\n"
-                        f"📍 **الدخول:** `{result['entry']}`\n"
-                        f"🛑 **وقف الخسارة:** `{result['sl']}`\n"
-                        f"🎯 **الهدف:** `{result['tp']}`\n"
-                        f"📊 **نسبة العائد/المخاطرة:** 1:{result['rr']}\n\n"
-                        f"📰 **أخبار:** {result['news']}\n\n"
-                        f"💡 فجوة سعرية (FVG) على الإطار 1 ساعة مع تأكيد الاتجاه من 4 ساعات"
-                    )
+    if btc:
+        msg += "🔹 Bitcoin (BTC)\n"
+        msg += f"• الاتجاه: { 'صاعد' if btc['trend']=='bull' else 'هابط' if btc['trend']=='bear' else 'جانبي' }\n"
+        msg += f"• الزخم: { 'قوي' if btc['momentum']=='strong' else 'ضعيف' }\n"
+        msg += f"• الوصف: {btc['description']}\n"
+        msg += f"• آخر سعر: {round(btc['last_price'], 2)}\n\n"
 
-                    try:
-                        await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
-                        print(f"✅ تم إرسال إشارة لـ {result['symbol']}")
-                    except Exception as e:
-                        print("Telegram Error:", e)
+    if eth:
+        msg += "🔹 Ethereum (ETH)\n"
+        msg += f"• الاتجاه: { 'صاعد' if eth['trend']=='bull' else 'هابط' if eth['trend']=='bear' else 'جانبي' }\n"
+        msg += f"• الزخم: { 'قوي' if eth['momentum']=='strong' else 'ضعيف' }\n"
+        msg += f"• الوصف: {eth['description']}\n"
+        msg += f"• آخر سعر: {round(eth['last_price'], 2)}\n\n"
 
-                await asyncio.sleep(1)
+    msg += "━━━━━━━━━━━━━━━━━━\n\n"
+    msg += "📌 خلاصة السوق خلال الـ 24 ساعة القادمة\n"
+    msg += f"• {comment}\n\n"
+    msg += "📌 التوقع العام:\n"
+    if bias == "bullish":
+        msg += "السوق يميل للصعود مع احتمالية تصحيح بسيط قبل استمرار الاتجاه."
+    elif bias == "bearish":
+        msg += "السوق يميل للهبوط مع احتمالية ارتدادات قصيرة داخل الاتجاه."
+    else:
+        msg += "الصورة غير واضحة تماماً، ويفضل انتظار حركة أوضح."
 
-            print("⏳ انتظار 5 دقائق...")
-            await asyncio.sleep(300)
+    msg += "\n\n🔹 أفضل 5 عملات نشطة من قائمة السيولة:\n"
+    top5 = analyze_top_coins(top_20_liquid_coins())
+    for i, c in enumerate(top5, 1):
+        msg += f"{i}) {c['symbol']}\n"
+        msg += f"   • الاتجاه: { 'صاعد' if c['trend']=='bull' else 'هابط' if c['trend']=='bear' else 'جانبي' }\n"
+        msg += f"   • الزخم: { 'قوي' if c['momentum']=='strong' else 'ضعيف' }\n"
+        msg += f"   • الوصف: {c['description']}\n"
 
-# ==============================
-# Health Check Server
-# ==============================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
+    return msg
 
-    def log_message(self, format, *args):
-        return
+# ================== بناء رسالة الصفقات ==================
+def build_trades_message():
+    coins = top_20_liquid_coins()
+    trades = find_best_trades(coins)
 
-def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"🌐 Health server running on port {port}")
-    server.serve_forever()
+    if not trades:
+        return "لا توجد صفقات واضحة حالياً وفق شروط الزخم ونسبة المخاطرة."
 
-# ==============================
-# تشغيل البوت
-# ==============================
-if __name__ == "__main__":
-    print("🚀 بدء تشغيل البوت...")
-    threading.Thread(target=run_health_server, daemon=True).start()
-    asyncio.run(main_loop())
+    msg = "🎯 Best 2 Trade Setups\n\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n\n"
+
+    for i, t in enumerate(trades, 1):
+        symbol = t["symbol"]
+        direction = "Long 🟢" if t["trend"] == "bull" else "Short 🔴"
+        entry_type = t["entry"]["entry_type"]
+        entry_price = t["entry"]["entry_price"]
+        sl = t["sl"]
+        tp = t["tp"]
+        rr = round(t["rr"], 1)
+        reason = t["entry"]["reason"]
+
+        title = "🏆 Trade #1" if i == 1 else "🥈 Trade #2"
+        msg += f"{title} — {symbol}\n"
+        msg += f"• Direction: {direction}\n"
+        msg += f"• Entry Type: {entry_type}\n"
+        msg += f"• Entry: {round(entry_price, 2)}\n"
+        msg += f"• Stop Loss: {round(sl, 2)}\n"
+        msg += f"• Take Profit: {round(tp, 2)}\n"
+        msg += f"• Risk/Reward: 1:{rr}\n"
+        msg += f"• السبب: {reason}\n\n"
+        msg += "━━━━━━━━━━━━━━━━━━\n\n"
+
+    msg += "⚠️ الملاحظة: إدارة رأس المال مسؤوليتك، والسوق قد يعيد اختبار مناطق السيولة قبل الانطلاق."
+    return msg
+
+# ================== هاندلر الأوامر ==================
+@bot.message_handler(commands=['start'])
+def start(m):
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    btn1 = types.KeyboardButton("تحليل")
+    btn2 = types.KeyboardButton("صفقات")
+    markup.add(btn1, btn2)
+    bot.reply_to(m, "🚀 نظام التحليل مفعل.\nاختر: تحليل أو صفقات.", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
+def main_handler(m):
+    if m.text == "تحليل":
+        wait = bot.reply_to(m, "جاري تحليل السوق العام...")
+        try:
+            msg = build_analysis_message()
+            bot.edit_message_text(msg, m.chat.id, wait.message_id)
+        except Exception:
+            bot.edit_message_text("حدث خطأ أثناء التحليل.", m.chat.id, wait.message_id)
+    else:
+        wait = bot.reply_to(m, "جاري البحث عن أفضل الصفقات...")
+        try:
+            msg = build_trades_message()
+            bot.edit_message_text(msg, m.chat.id, wait.message_id)
+        except Exception:
+            bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
+
+# ================== تشغيل البوت ==================
+print("Bot is running...")
+bot.infinity_polling(skip_pending=True)
