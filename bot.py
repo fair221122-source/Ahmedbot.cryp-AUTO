@@ -243,65 +243,105 @@ def detect_entry_15m(df_15m, trend):
 
 # ================== البحث عن أفضل صفقتين ==================
 def find_best_trades(symbols):
+def find_best_trades(symbols):
     candidates = []
+
     for sym in symbols:
+        # بيانات 4 ساعات + ساعة + 15 دقيقة
+        df_4h = fetch_klines(sym, "4h", 200)
         df_1h = fetch_klines(sym, "1h", 200)
         df_15m = fetch_klines(sym, "15m", 200)
-        if df_1h is None or df_15m is None:
-            continue
-        if len(df_1h) < 60 or len(df_15m) < 50:
+
+        if df_4h is None or df_1h is None or df_15m is None:
             continue
 
-        trend, momentum, desc = detect_trend_1h(df_1h, lookback=50)
-        if trend == "side":
+        # تأكد من وجود بيانات كافية
+        if len(df_4h) < 100 or len(df_1h) < 100 or len(df_15m) < 50:
             continue
 
-        entry = detect_entry_15m(df_15m, trend)
-        if not entry:
-            continue
+        # ============================
+        # 1) فلتر الاتجاه العام (4h)
+        # ============================
+        df_4h["ema50"] = df_4h["close"].ewm(span=50).mean()
+        df_4h["ema200"] = df_4h["close"].ewm(span=200).mean()
 
-        if trend == "bull":
-            sl = entry["entry_price"] * 0.99
-            tp = entry["entry_price"] * 1.03
+        if df_4h["ema50"].iloc[-1] > df_4h["ema200"].iloc[-1]:
+            main_trend = "bull"
+        elif df_4h["ema50"].iloc[-1] < df_4h["ema200"].iloc[-1]:
+            main_trend = "bear"
         else:
-            sl = entry["entry_price"] * 1.01
-            tp = entry["entry_price"] * 0.97
+            continue
 
-        risk = abs(entry["entry_price"] - sl)
-        reward = abs(tp - entry["entry_price"])
+        # ============================
+        # 2) فلتر الاتجاه المتوسط (1h)
+        # ============================
+        df_1h["ema50"] = df_1h["close"].ewm(span=50).mean()
+        df_1h["ema200"] = df_1h["close"].ewm(span=200).mean()
+
+        if main_trend == "bull" and not (df_1h["ema50"].iloc[-1] > df_1h["ema200"].iloc[-1]):
+            continue
+
+        if main_trend == "bear" and not (df_1h["ema50"].iloc[-1] < df_1h["ema200"].iloc[-1]):
+            continue
+
+        # ============================
+        # 3) فلتر الفوليوم (15m)
+        # ============================
+        df_15m["vol_ma20"] = df_15m["volume"].rolling(20).mean()
+        if df_15m["volume"].iloc[-1] < df_15m["vol_ma20"].iloc[-1]:
+            continue
+
+        # ============================
+        # 4) شمعة تأكيد (Breakout)
+        # ============================
+        last_close = df_15m["close"].iloc[-1]
+        last_open = df_15m["open"].iloc[-1]
+
+        if main_trend == "bull":
+            if not (last_close > last_open and last_close > df_15m["close"].rolling(20).max().iloc[-2]):
+                continue
+
+        if main_trend == "bear":
+            if not (last_close < last_open and last_close < df_15m["close"].rolling(20).min().iloc[-2]):
+                continue
+
+        # ============================
+        # 5) SL و TP واقعيين
+        # ============================
+        if main_trend == "bull":
+            sl = df_15m["low"].rolling(10).min().iloc[-1]
+            tp = last_close + (last_close - sl) * 2
+        else:
+            sl = df_15m["high"].rolling(10).max().iloc[-1]
+            tp = last_close - (sl - last_close) * 2
+
+        entry_price = last_close
+        risk = abs(entry_price - sl)
+        reward = abs(tp - entry_price)
         rr = reward / risk if risk > 0 else 0
 
-        if rr < 3:
+        if rr < 1.5:
             continue
 
-        ch_1h, ch_24h, pos = calc_percent_metrics(df_1h)
-
-        score = 0
-        if momentum == "strong":
-            score += 2
-        else:
-            score += 1
-        score += rr  # نعطي وزن لـ R:R
-
+        # ============================
+        # 6) إضافة الصفقة للقائمة
+        # ============================
         candidates.append({
             "symbol": sym,
-            "trend": trend,
-            "momentum": momentum,
-            "entry": entry,
+            "trend": main_trend,
+            "entry_price": entry_price,
             "sl": sl,
             "tp": tp,
             "rr": rr,
-            "score": score,
-            "change_1h": ch_1h,
-            "change_24h": ch_24h,
-            "pos_range": pos
+            "volume": df_15m["volume"].iloc[-1]
         })
+
         time.sleep(0.05)
 
-    # ترتيب حسب أعلى R:R أولاً ثم أعلى Score
-    candidates = sorted(candidates, key=lambda x: (x["rr"], x["score"]), reverse=True)
+    # ترتيب حسب أعلى R:R
+    candidates = sorted(candidates, key=lambda x: x["rr"], reverse=True)
     return candidates[:2]
-
+    
 # ================== بناء رسالة التحليل ==================
 def fmt_pct(v):
     return f"{v:+.2f}%"
@@ -402,24 +442,43 @@ def build_trades_message(trades=None):
 
 # ================== فحص تلقائي للفرص كل 5 دقائق ==================
 def auto_scan_loop():
-    global LAST_CHAT_ID
+    global LAST_CHAT_ID, LAST_SENT_SYMBOL
     while True:
         try:
             if LAST_CHAT_ID is not None:
                 coins = top_20_liquid_coins()
                 trades = find_best_trades(coins)
-                if trades:
-                    msg = "⏰ فحص تلقائي — فرص شبه مؤكدة:\n\n"
-                    msg += build_trades_message(trades)
 
-                    # منع تكرار نفس الرسالة خلال نصف ساعة
+                if trades:
+                    filtered_trades = []
+                    now = time.time()
+
+                    # فلترة الصفقات لمنع تكرار نفس العملة خلال 30 دقيقة
+                    for t in trades:
+                        sym = t["symbol"]
+                        if sym in LAST_SENT_SYMBOL:
+                            if now - LAST_SENT_SYMBOL[sym] < 1800:
+                                continue
+                        filtered_trades.append(t)
+                        LAST_SENT_SYMBOL[sym] = now
+
+                    # إذا لم يبقَ أي صفقة بعد الفلترة → لا ترسل شيء
+                    if not filtered_trades:
+                        time.sleep(600)
+                        continue
+
+                    # بناء الرسالة
+                    msg = "⏰ فحص تلقائي — فرص مؤكدة:\n\n"
+                    msg += build_trades_message(filtered_trades)
+
+                    # منع تكرار نفس الرسالة
                     if can_send(msg):
                         bot.send_message(LAST_CHAT_ID, msg)
 
         except Exception as e:
             print("Auto scan error:", e)
 
-        time.sleep(300)  # كل 5 دقائق
+        time.sleep(600)  # كل 10 دقائق
         
 # ================== هاندلر الأوامر ==================
 @bot.message_handler(commands=['start'])
