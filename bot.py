@@ -127,7 +127,7 @@ def calc_atr(df, period=14):
     atr = tr.rolling(period).mean()
     return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
 
-# FVG مبسط على فريم الساعة: فجوة بين high السابقة و low الحالية أو العكس
+# FVG مبسط على فريم الساعة
 def detect_fvg_1h(df):
     if len(df) < 3:
         return False
@@ -135,10 +135,34 @@ def detect_fvg_1h(df):
     l_prev = df["l"].iloc[-2]
     l_cur = df["l"].iloc[-1]
     h_cur = df["h"].iloc[-1]
-    # فجوة صاعدة أو هابطة بسيطة
     if l_cur > h_prev or h_cur < l_prev:
         return True
     return False
+
+# ================== تحليل 1D ==================
+def analyze_symbol_1d(symbol):
+    df = fetch_klines(symbol, "1d", 200)
+    if df is None or len(df) < 60:
+        return None
+    trend, momentum, desc = detect_trend(df)
+    ch1, ch24, pos = calc_percent_metrics(df)
+    atr = calc_atr(df, period=14)
+
+    # تقدير Premium / Discount من موقع السعر داخل الرينج اليومي
+    zone = "neutral"
+    if pos > 70:
+        zone = "premium"
+    elif pos < 30:
+        zone = "discount"
+
+    return {
+        "trend_1d": trend,
+        "momentum_1d": momentum,
+        "desc_1d": desc,
+        "pos_1d": pos,
+        "zone_1d": zone,
+        "atr_1d": atr
+    }
 
 # ================== تحليل 1h ==================
 def analyze_symbol_1h(symbol):
@@ -215,50 +239,71 @@ def calc_success_prob(t):
     if rr >= 7:
         score += 5
 
-    # توافق الاتجاه بين 1h و 4h
-    if t["trend"] == t["trend_4h"]:
-        score += 20
+    # توافق الاتجاه بين 1D و 4H و 1H
+    if t["trend_1d"] == t["trend_4h"] == t["trend"]:
+        score += 25
+    elif t["trend_1d"] == t["trend_4h"] or t["trend_1d"] == t["trend"]:
+        score += 15
 
     # الزخم
     if t["momentum"] == "strong":
         score += 10
     if t["momentum_4h"] == "strong":
         score += 10
+    if t["momentum_1d"] == "strong":
+        score += 10
 
-    # موقع السعر داخل الرينج (proxy لمناطق السيولة/الـ pool/الـ swing)
+    # موقع السعر داخل الرينج (كلاستر سعري / سيولة)
     pos = t["pos_range"]
     if 30 <= pos <= 70:
         score += 10
     elif 20 <= pos < 30 or 70 < pos <= 80:
         score += 5
 
-    # FVG على الساعة (فرصة عودة السعر لملئها)
+    # FVG على الساعة
     if t.get("has_fvg_1h"):
         score += 5
+
+    # Premium / Discount من اليومي
+    if t["trend_1d"] == "bull" and t["zone_1d"] == "discount":
+        score += 10
+    if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
+        score += 10
 
     score = max(50, min(95, score))
     return score
 
 # ================== اختيار R:R ديناميكي ==================
-def choose_rr(info1, info4):
+def choose_rr(info1, info4, info1d):
     base = 2.5
     rr = base
-    # توافق الاتجاه + زخم قوي يرفع الهدف
-    if info1["trend"] == info4["trend_4h"] and info1["momentum"]=="strong" and info4["momentum_4h"]=="strong":
-        rr = 4.0
-    elif info1["trend"] == info4["trend_4h"] and (info1["momentum"]=="strong" or info4["momentum_4h"]=="strong"):
-        rr = 3.0
-    # إذا السوق قوي جدًا ممكن نسمح أعلى
-    if rr >= 4 and info1["change_24h"]* (1 if info1["trend"]=="bull" else -1) > 5:
+
+    # توافق الاتجاه بين 1D و 4H و 1H
+    if info1d["trend_1d"] == info4["trend_4h"] == info1["trend"] and \
+       info1["momentum"]=="strong" and info4["momentum_4h"]=="strong" and info1d["momentum_1d"]=="strong":
         rr = 5.0
-    # سقف 7 لو حاب توسع لاحقًا
-    return min(rr, 7.0)
+    elif info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]:
+        rr = 4.0
+    elif info1d["trend_1d"] == info4["trend_4h"] or info1d["trend_1d"] == info1["trend"]:
+        rr = 3.0
+
+    # إذا الحركة اليومية قوية في اتجاه الترند
+    if info1d["trend_1d"] == "bull" and info1["change_24h"] > 5:
+        rr = max(rr, 4.0)
+    if info1d["trend_1d"] == "bear" and info1["change_24h"] < -5:
+        rr = max(rr, 4.0)
+
+    return min(max(rr, 2.5), 7.0)
 
 # ================== أفضل الصفقات ==================
 def find_best_trades(symbols):
     results = []
 
     for sym in symbols:
+        info1d = analyze_symbol_1d(sym)
+        if not info1d:
+            continue
+
         info1 = analyze_symbol_1h(sym)
         if not info1:
             continue
@@ -267,8 +312,8 @@ def find_best_trades(symbols):
         if not info4:
             continue
 
-        # شرط الاتجاه: لا ندخل عكس 4h
-        if info1["trend"] != info4["trend_4h"]:
+        # شرط الاتجاه: لا ندخل عكس الاتجاه اليومي
+        if info1["trend"] != info1d["trend_1d"] or info4["trend_4h"] != info1d["trend_1d"]:
             continue
 
         df15 = fetch_klines(sym, "15m", 200)
@@ -286,7 +331,7 @@ def find_best_trades(symbols):
         if atr is None or atr <= 0:
             continue
 
-        rr = choose_rr(info1, info4)
+        rr = choose_rr(info1, info4, info1d)
         if rr < 2.5:
             continue
 
@@ -297,7 +342,6 @@ def find_best_trades(symbols):
             sl = ep + 1.5 * atr
             tp = ep - rr * 1.5 * atr
 
-        # تأكد أن SL و TP منطقيين
         if (info1["trend"]=="bull" and not (sl < ep < tp)) or (info1["trend"]=="bear" and not (tp < ep < sl)):
             continue
 
@@ -309,8 +353,10 @@ def find_best_trades(symbols):
             "symbol": sym,
             "trend": info1["trend"],
             "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
             "momentum": info1["momentum"],
             "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
             "entry": entry,
             "sl": sl,
             "tp": tp,
@@ -318,7 +364,8 @@ def find_best_trades(symbols):
             "change_1h": info1["change_1h"],
             "change_24h": info1["change_24h"],
             "pos_range": info1["pos_range"],
-            "has_fvg_1h": info1["has_fvg"]
+            "has_fvg_1h": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"]
         })
 
         time.sleep(0.05)
@@ -330,23 +377,26 @@ def find_best_trades(symbols):
 def analyze_top_coins(symbols):
     out = []
     for sym in symbols:
+        info1d = analyze_symbol_1d(sym)
         info1 = analyze_symbol_1h(sym)
         info4 = analyze_symbol_4h(sym)
-        if info1 and info4:
+        if info1d and info1 and info4:
             score = 0
-            # قوة الحركة اليومية
             score += abs(info1["change_24h"])
-            # زخم
             if info1["momentum"]=="strong":
                 score += 5
             if info4["momentum_4h"]=="strong":
                 score += 5
-            # توافق الاتجاه
-            if info1["trend"] == info4["trend_4h"]:
-                score += 10
+            if info1d["momentum_1d"]=="strong":
+                score += 5
+            if info1["trend"] == info4["trend_4h"] == info1d["trend_1d"]:
+                score += 15
             info1["score"] = score
             info1["trend_4h"] = info4["trend_4h"]
             info1["momentum_4h"] = info4["momentum_4h"]
+            info1["trend_1d"] = info1d["trend_1d"]
+            info1["momentum_1d"] = info1d["momentum_1d"]
+            info1["zone_1d"] = info1d["zone_1d"]
             out.append(info1)
     return sorted(out, key=lambda x: x["score"], reverse=True)[:5]
 
@@ -355,25 +405,37 @@ def build_analysis_message():
     if not coins:
         return "لا يوجد تحليل متاح حالياً."
 
-    msg = "📊 تحليل السوق العام على الإطارات الزمنية التالية:   (4H + 1H + 15M)\n\n"
+    msg = "📊 تحليل السوق العام على الإطارات الزمنية التالية:   (1D + 4H + 1H + 15M)\n\n"
 
     for i, c in enumerate(coins, 1):
         symbol = c["symbol"]
-        # تقدير بسيط لنسبة التوقع
+
         base = 50
-        if c["trend_4h"] == "bull" and c["trend"] == "bull":
+        if c["trend_1d"] == "bull":
+            base += 10
+        if c["trend_1d"] == c["trend_4h"] == c["trend"]:
             base += 15
         if c["momentum"] == "strong":
-            base += 10
+            base += 5
         if c["momentum_4h"] == "strong":
-            base += 10
+            base += 5
+        if c["momentum_1d"] == "strong":
+            base += 5
         if c["pos_range"] > 70 and c["trend"]=="bull":
             base += 5
         if c["pos_range"] < 30 and c["trend"]=="bear":
             base += 5
+
         prob = max(40, min(90, base))
 
-        # توصيف مبسط للفريمات
+        # 1D
+        if c["trend_1d"]=="bull":
+            txt1d = "اتجاه صاعد رئيسي"
+        elif c["trend_1d"]=="bear":
+            txt1d = "اتجاه هابط رئيسي"
+        else:
+            txt1d = "اتجاه يومي جانبي"
+
         # 4h
         if c["trend_4h"]=="bull":
             txt4 = "اتجاه صاعد قوي" if c["momentum_4h"]=="strong" else "اتجاه صاعد"
@@ -400,13 +462,15 @@ def build_analysis_message():
         else:
             txt15 = "حركة متذبذبة"
 
-        direction_icon = "📈" if c["trend_4h"]=="bull" or c["trend"]=="bull" else "📉"
+        direction_icon = "📈" if c["trend_1d"]=="bull" else "📉" if c["trend_1d"]=="bear" else "⚖️"
+        direction_word = "صعود" if direction_icon=="📈" else "هبوط" if direction_icon=="📉" else "حركة جانبية"
 
         msg += f"{i}) {symbol}\n"
+        msg += f"📅 1D: {txt1d}\n"
         msg += f"🕓 4h: {txt4}\n"
         msg += f"🕐 1h: {txt1}\n"
         msg += f"🕒 15m: {txt15}\n"
-        msg += f"{direction_icon} التوقع: {prob:.0f}% {'صعود' if direction_icon=='📈' else 'هبوط'} خلال الساعات القادمة\n\n"
+        msg += f"{direction_icon} التوقع: {prob:.0f}% {direction_word} خلال الساعات القادمة\n\n"
 
     return msg
 
@@ -427,10 +491,7 @@ def build_trades_message(trades=None):
         success = calc_success_prob(t)
         direction_icon = "🟢" if t["trend"]=="bull" else "🔴"
 
-        if i == 1:
-            rank_icon = "🥇"
-        else:
-            rank_icon = "🥈"
+        rank_icon = "🥇" if i == 1 else "🥈"
 
         msg += f"{rank_icon} {t['symbol']} — {direction_icon} ({t['entry']['entry_type']})\n\n"
         msg += f"Entry: {fmt_price(ep)}\n"
@@ -440,7 +501,7 @@ def build_trades_message(trades=None):
         msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
 
         reason = t["entry"]["reason"]
-        extra_reason = "توافق الإطارات الزمنية 4H+1H"
+        extra_reason = "توافق الإطارات الزمنية 1D+4H+1H"
         if t.get("has_fvg_1h"):
             extra_reason += " + وجود FVG على 1H"
         msg += f"📌 السبب: {extra_reason} + {reason}\n\n"
@@ -452,7 +513,7 @@ def build_auto_scan_message(trades):
     if not trades:
         return None
 
-    t = trades[0]  # نأخذ أفضل صفقة واحدة في الفحص التلقائي
+    t = trades[0]
     ep = t["entry"]["entry_price"]
     sl = t["sl"]; tp = t["tp"]
     rr = t["rr"]
@@ -468,7 +529,7 @@ def build_auto_scan_message(trades):
     msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
 
     reason = t["entry"]["reason"]
-    extra_reason = "شمعة رفض على 15m + اتجاه 4h/1h متوافق"
+    extra_reason = "شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق"
     if t.get("has_fvg_1h"):
         extra_reason += " + FVG على 1H"
     msg += f"📌 السبب: {extra_reason}\n"
@@ -517,7 +578,7 @@ def main_handler(m):
     LAST_CHAT_ID = m.chat.id
 
     if m.text=="تحليل":
-        wait = bot.reply_to(m, "جاري تحليل السوق على (4H + 1H + 15M)...")
+        wait = bot.reply_to(m, "جاري تحليل السوق على (1D + 4H + 1H + 15M)...")
         try:
             msg = build_analysis_message()
             bot.edit_message_text(msg, m.chat.id, wait.message_id)
