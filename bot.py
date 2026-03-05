@@ -49,6 +49,30 @@ def top_20_liquid_coins():
         "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
     ]
 
+# ================== المؤشرات الفنية (RSI) ==================
+def calc_rsi(df, period=14):
+    delta = df["c"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+def rsi_filter(df, side):
+    rsi = calc_rsi(df).iloc[-1]
+
+    if side == "LONG" and rsi > 70:
+        return False  # تشبع شرائي
+    if side == "SHORT" and rsi < 30:
+        return False  # تشبع بيعي
+
+    return True
+
 # ================== جلب البيانات ==================
 def fetch_klines(symbol, interval="1h", limit=200):
     urls = [
@@ -63,35 +87,27 @@ def fetch_klines(symbol, interval="1h", limit=200):
             try:
                 r = requests.get(url, params=params, timeout=10)
                 data = r.json()
+
+                # خطأ من Binance API
                 if isinstance(data, dict) and data.get("code"):
+                    print(f"[API ERROR] Binance error for {symbol} {interval}: {data}")
                     time.sleep(0.3)
                     continue
+
+                # تحويل البيانات إلى DataFrame
                 df = pd.DataFrame(data, columns=[
                     "t","o","h","l","c","v","ct","qv","n","tbb","tbq","i"
                 ])
                 df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
+
                 return df[["o","h","l","c","v"]]
-            except:
+
+            except Exception as e:
+                print(f"[API ERROR] فشل في جلب بيانات {symbol} — {interval}: {e}")
                 time.sleep(0.3)
                 continue
+
     return None
-    def data_ok(df, min_len=60):
-    return (
-        df is not None and
-        len(df) >= min_len and
-        df.isnull().sum().sum() == 0
-    )
-def fetch_funding_rate(symbol):
-    try:
-        url = "https://fapi.binance.com/fapi/v1/fundingRate"
-        params = {"symbol": symbol, "limit": 1}
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        if isinstance(data, list) and len(data) > 0:
-            return float(data[0]["fundingRate"])
-    except:
-        return 0.0
-    return 0.0
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
     o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
@@ -598,9 +614,10 @@ def auto_scan_loop():
                     filtered = []
                     for t in trades:
                         sig = make_signature(t)
-                        if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
-                            continue
-                        LAST_TRADE_SIGNATURE[sig] = now
+                        with lock:
+    if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
+        continue
+    LAST_TRADE_SIGNATURE[sig] = now
                         filtered.append(t)
 
                     if filtered:
