@@ -9,7 +9,16 @@ import pandas as pd
 import numpy as np
 import telebot
 from telebot import types
-
+LAST_SENT = {}
+def can_send(symbol):
+    now = time.time()
+    if symbol in LAST_SENT:
+        # 1800 ثانية = نصف ساعة
+        if now - LAST_SENT[symbol] < 1800:
+            return False
+    LAST_SENT[symbol] = now
+    return True
+    
 # ================== إعداد اللوج ==================
 logging.basicConfig(level=logging.CRITICAL)
 
@@ -400,13 +409,18 @@ def auto_scan_loop():
                 coins = top_20_liquid_coins()
                 trades = find_best_trades(coins)
                 if trades:
-                    msg = "⏰ فحص تلقائي — فرص مؤكدة:\n\n"
+                    msg = "⏰ فحص تلقائي — فرص شبه مؤكدة:\n\n"
                     msg += build_trades_message(trades)
-                    bot.send_message(LAST_CHAT_ID, msg)
+
+                    # منع تكرار نفس الرسالة خلال نصف ساعة
+                    if can_send(msg):
+                        bot.send_message(LAST_CHAT_ID, msg)
+
         except Exception as e:
             print("Auto scan error:", e)
-        time.sleep(300)  # كل 5 دقائق
 
+        time.sleep(300)  # كل 5 دقائق
+        
 # ================== هاندلر الأوامر ==================
 @bot.message_handler(commands=['start'])
 def start(m):
