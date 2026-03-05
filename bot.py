@@ -424,7 +424,7 @@ def find_best_trades(symbols):
             continue
 
         # ============================
-        # فلتر RSI (النقطة 7)
+        # فلتر RSI (الجزء الثاني)
         # ============================
         df_rsi = fetch_klines(sym, "1h", 200)
         if df_rsi is None or not data_ok(df_rsi):
@@ -433,6 +433,17 @@ def find_best_trades(symbols):
         side = "LONG" if info1["trend"] == "bull" else "SHORT"
         if not rsi_filter(df_rsi, side):
             continue
+        # ============================
+
+        # ============================
+        # فلتر الأخبار (الجزء الثالث)
+        # ============================
+        news = fetch_crypto_news()
+        if news:
+            bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
+            if len(bad_news) > 0:
+                print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
+                continue
         # ============================
 
         if info1["trend"] == "bull":
