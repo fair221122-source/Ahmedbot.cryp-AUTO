@@ -438,10 +438,6 @@ def main_handler(m):
             bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
 
 # ================== تشغيل البوت ==================
-print("Bot is running...")
-
-# تشغيل حلقة الفحص التلقائي في ثريد منفصل
-threading.Thread(target=auto_scan_loop, daemon=True).start()
 
 print("Bot is running...")
 
