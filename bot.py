@@ -209,7 +209,8 @@ def detect_fvg_1h(df):
 def analyze_symbol_1d(symbol):
     df = fetch_klines(symbol, "1d", 200)
     if not data_ok(df, 120):
-    return None
+        return None
+
     trend, momentum, desc = detect_trend(df)
     ch1, ch24, pos = calc_percent_metrics(df)
     atr = calc_atr(df, period=14)
@@ -229,7 +230,6 @@ def analyze_symbol_1d(symbol):
         "zone_1d": zone,
         "atr_1d": atr
     }
-
 # ================== تحليل 1h ==================
 def analyze_symbol_1h(symbol):
     df = fetch_klines(symbol, "1h", 200)
