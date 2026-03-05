@@ -268,14 +268,15 @@ def analyze_symbol_1h(symbol):
 def analyze_symbol_4h(symbol):
     df = fetch_klines(symbol, "4h", 200)
     if not data_ok(df, 80):
-    return None
+        return None
+
     trend, momentum, desc = detect_trend(df)
+
     return {
         "trend_4h": trend,
         "momentum_4h": momentum,
         "desc_4h": desc
     }
-
 # ================== دخول 15m ==================
 def detect_entry_15m(df, trend):
     last = df.iloc[-5:]
