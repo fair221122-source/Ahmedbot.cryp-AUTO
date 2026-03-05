@@ -81,7 +81,17 @@ def fetch_klines(symbol, interval="1h", limit=200):
         len(df) >= min_len and
         df.isnull().sum().sum() == 0
     )
-
+def fetch_funding_rate(symbol):
+    try:
+        url = "https://fapi.binance.com/fapi/v1/fundingRate"
+        params = {"symbol": symbol, "limit": 1}
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            return float(data[0]["fundingRate"])
+    except:
+        return 0.0
+    return 0.0
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
     o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
@@ -187,18 +197,20 @@ def analyze_symbol_1h(symbol):
     ch1, ch24, pos = calc_percent_metrics(df)
     atr = calc_atr(df, period=14)
     fvg = detect_fvg_1h(df)
+    funding = fetch_funding_rate(symbol)
     return {
-        "symbol": symbol,
-        "trend": trend,
-        "momentum": momentum,
-        "description": desc,
-        "last_price": df["c"].iloc[-1],
-        "change_1h": ch1,
-        "change_24h": ch24,
-        "pos_range": pos,
-        "atr_1h": atr,
-        "has_fvg": fvg
-    }
+    "symbol": symbol,
+    "trend": trend,
+    "momentum": momentum,
+    "description": desc,
+    "last_price": df["c"].iloc[-1],
+    "change_1h": ch1,
+    "change_24h": ch24,
+    "pos_range": pos,
+    "atr_1h": atr,
+    "has_fvg": fvg,
+    "funding": funding
+}
 
 # ================== تحليل 4h ==================
 def analyze_symbol_4h(symbol):
@@ -283,7 +295,15 @@ def calc_success_prob(t):
         score += 10
     if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
         score += 10
-
+# تأثير الـ Funding Rate
+if "funding" in t:
+    f = t["funding"]
+    # إذا الاتجاه صاعد والتمويل سلبي قوي → نخفض النجاح
+    if t["trend"] == "bull" and f < -0.0005:
+        score -= 10
+    # إذا الاتجاه هابط والتمويل إيجابي قوي → نخفض النجاح
+    if t["trend"] == "bear" and f > 0.0005:
+        score -= 10
     score = max(50, min(95, score))
     return score
 
