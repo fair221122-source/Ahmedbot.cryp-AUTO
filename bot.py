@@ -384,7 +384,7 @@ def find_best_trades(symbols):
 
         df15 = fetch_klines(sym, "15m", 200)
         if not data_ok(df15, 80):
-    continue
+            continue
 
         entry = detect_entry_15m(df15, info1["trend"])
         if not entry:
@@ -401,17 +401,30 @@ def find_best_trades(symbols):
         if rr < 2.5:
             continue
 
-        if info1["trend"]=="bull":
+        # ============================
+        # فلتر RSI (النقطة 7)
+        # ============================
+        df_rsi = fetch_klines(sym, "1h", 200)
+        if df_rsi is None or not data_ok(df_rsi):
+            continue
+
+        side = "LONG" if info1["trend"] == "bull" else "SHORT"
+        if not rsi_filter(df_rsi, side):
+            continue
+        # ============================
+
+        if info1["trend"] == "bull":
             sl = ep - 1.5 * atr
             tp = ep + rr * 1.5 * atr
         else:
             sl = ep + 1.5 * atr
             tp = ep - rr * 1.5 * atr
 
-        if (info1["trend"]=="bull" and not (sl < ep < tp)) or (info1["trend"]=="bear" and not (tp < ep < sl)):
+        if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
+           (info1["trend"] == "bear" and not (tp < ep < sl)):
             continue
 
-        real_rr = abs((tp-ep)/(ep-sl))
+        real_rr = abs((tp - ep) / (ep - sl))
         if real_rr < 2.5:
             continue
 
@@ -438,7 +451,6 @@ def find_best_trades(symbols):
 
     results = sorted(results, key=lambda x: x["rr"], reverse=True)
     return results[:2]
-
 # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
     out = []
