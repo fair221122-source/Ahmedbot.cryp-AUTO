@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import threading
 import requests
 import pandas as pd
 import numpy as np
@@ -13,6 +14,9 @@ logging.basicConfig(level=logging.CRITICAL)
 # ================== توكن البوت ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # ← ضع التوكن في Render Environment
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# آخر شات تم التفاعل معه (لإرسال الفرص التلقائية)
+LAST_CHAT_ID = None
 
 # ================== قائمة 20 عملة عالية السيولة (Futures) ==================
 def top_20_liquid_coins():
@@ -102,18 +106,42 @@ def detect_trend_1h(df_1h, lookback=50):
     description = " + ".join(desc_parts)
     return trend, momentum, description
 
+def calc_percent_metrics(df):
+    # تغيّر آخر 24 شمعة (تقريباً 24 ساعة على فريم الساعة)
+    close_last = df["c"].iloc[-1]
+    close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
+    change_24 = (close_last - close_24) / close_24 * 100 if close_24 != 0 else 0
+
+    # تغيّر آخر شمعة (تقريباً آخر ساعة)
+    close_prev = df["c"].iloc[-2] if len(df) >= 2 else df["c"].iloc[0]
+    change_1h = (close_last - close_prev) / close_prev * 100 if close_prev != 0 else 0
+
+    # موقع السعر داخل الرينج
+    low_range = df["l"].min()
+    high_range = df["h"].max()
+    if high_range != low_range:
+        pos_in_range = (close_last - low_range) / (high_range - low_range) * 100
+    else:
+        pos_in_range = 50.0
+
+    return change_1h, change_24, pos_in_range
+
 def analyze_symbol_1h(symbol):
     df_1h = fetch_klines(symbol, "1h", 200)
     if df_1h is None or len(df_1h) < 60:
         return None
     trend, momentum, desc = detect_trend_1h(df_1h, lookback=50)
     last_close = df_1h["c"].iloc[-1]
+    ch_1h, ch_24h, pos = calc_percent_metrics(df_1h)
     return {
         "symbol": symbol,
         "trend": trend,
         "momentum": momentum,
         "description": desc,
-        "last_price": last_close
+        "last_price": last_close,
+        "change_1h": ch_1h,
+        "change_24h": ch_24h,
+        "pos_range": pos
     }
 
 # ================== تحليل السوق العام (BTC / ETH فقط) ==================
@@ -167,6 +195,8 @@ def analyze_top_coins(symbols):
             score += 2
         else:
             score += 1
+        # نضيف قوة إضافية حسب نسبة التغير 24 ساعة
+        score += abs(info["change_24h"]) / 5.0
         info["score"] = score
         analyzed.append(info)
         time.sleep(0.05)
@@ -233,11 +263,14 @@ def find_best_trades(symbols):
         if rr < 3:
             continue
 
+        ch_1h, ch_24h, pos = calc_percent_metrics(df_1h)
+
         score = 0
         if momentum == "strong":
             score += 2
         else:
             score += 1
+        score += rr  # نعطي وزن لـ R:R
 
         candidates.append({
             "symbol": sym,
@@ -247,14 +280,24 @@ def find_best_trades(symbols):
             "sl": sl,
             "tp": tp,
             "rr": rr,
-            "score": score
+            "score": score,
+            "change_1h": ch_1h,
+            "change_24h": ch_24h,
+            "pos_range": pos
         })
         time.sleep(0.05)
 
-    candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+    # ترتيب حسب أعلى R:R أولاً ثم أعلى Score
+    candidates = sorted(candidates, key=lambda x: (x["rr"], x["score"]), reverse=True)
     return candidates[:2]
 
 # ================== بناء رسالة التحليل ==================
+def fmt_pct(v):
+    return f"{v:+.2f}%"
+
+def fmt_price(v):
+    return f"{v:.4f}"
+
 def build_analysis_message():
     market = analyze_market_overview()
     assets = market["assets"]
@@ -263,22 +306,23 @@ def build_analysis_message():
 
     msg = "📊 تحليل السوق العام – فريم الساعة (آخر 50 شمعة)\n\n"
 
-    btc = assets.get("Bitcoin")
-    eth = assets.get("Ethereum")
+    # ترتيب BTC و ETH حسب قوة التغير 24 ساعة
+    ordered = []
+    for name in ["Bitcoin", "Ethereum"]:
+        if name in assets:
+            ordered.append(assets[name])
+    ordered = sorted(ordered, key=lambda x: abs(x["change_24h"]), reverse=True)
 
-    if btc:
-        msg += "🔹 Bitcoin (BTC)\n"
-        msg += f"• الاتجاه: { 'صاعد' if btc['trend']=='bull' else 'هابط' if btc['trend']=='bear' else 'جانبي' }\n"
-        msg += f"• الزخم: { 'قوي' if btc['momentum']=='strong' else 'ضعيف' }\n"
-        msg += f"• الوصف: {btc['description']}\n"
-        msg += f"• آخر سعر: {round(btc['last_price'], 2)}\n\n"
-
-    if eth:
-        msg += "🔹 Ethereum (ETH)\n"
-        msg += f"• الاتجاه: { 'صاعد' if eth['trend']=='bull' else 'هابط' if eth['trend']=='bear' else 'جانبي' }\n"
-        msg += f"• الزخم: { 'قوي' if eth['momentum']=='strong' else 'ضعيف' }\n"
-        msg += f"• الوصف: {eth['description']}\n"
-        msg += f"• آخر سعر: {round(eth['last_price'], 2)}\n\n"
+    for asset in ordered:
+        name = asset["symbol"].replace("USDT", "")
+        msg += f"🔹 {name} ({asset['symbol']})\n"
+        msg += f"• الاتجاه: {'صاعد' if asset['trend']=='bull' else 'هابط' if asset['trend']=='bear' else 'جانبي'}\n"
+        msg += f"• الزخم: {'قوي' if asset['momentum']=='strong' else 'ضعيف'}\n"
+        msg += f"• التغير 1h: {fmt_pct(asset['change_1h'])}\n"
+        msg += f"• التغير 24h: {fmt_pct(asset['change_24h'])}\n"
+        msg += f"• موقع السعر داخل الرينج: {asset['pos_range']:.1f}%\n"
+        msg += f"• الوصف: {asset['description']}\n"
+        msg += f"• آخر سعر: {fmt_price(asset['last_price'])}\n\n"
 
     msg += "━━━━━━━━━━━━━━━━━━\n\n"
     msg += "📌 خلاصة السوق خلال الـ 24 ساعة القادمة\n"
@@ -294,17 +338,22 @@ def build_analysis_message():
     msg += "\n\n🔹 أفضل 5 عملات نشطة من قائمة السيولة:\n"
     top5 = analyze_top_coins(top_20_liquid_coins())
     for i, c in enumerate(top5, 1):
-        msg += f"{i}) {c['symbol']}\n"
-        msg += f"   • الاتجاه: { 'صاعد' if c['trend']=='bull' else 'هابط' if c['trend']=='bear' else 'جانبي' }\n"
-        msg += f"   • الزخم: { 'قوي' if c['momentum']=='strong' else 'ضعيف' }\n"
+        name = c["symbol"].replace("USDT", "")
+        msg += f"{i}) {name} ({c['symbol']})\n"
+        msg += f"   • الاتجاه: {'صاعد' if c['trend']=='bull' else 'هابط' if c['trend']=='bear' else 'جانبي'}\n"
+        msg += f"   • الزخم: {'قوي' if c['momentum']=='strong' else 'ضعيف'}\n"
+        msg += f"   • التغير 1h: {fmt_pct(c['change_1h'])}\n"
+        msg += f"   • التغير 24h: {fmt_pct(c['change_24h'])}\n"
+        msg += f"   • موقع السعر داخل الرينج: {c['pos_range']:.1f}%\n"
         msg += f"   • الوصف: {c['description']}\n"
 
     return msg
 
 # ================== بناء رسالة الصفقات ==================
-def build_trades_message():
-    coins = top_20_liquid_coins()
-    trades = find_best_trades(coins)
+def build_trades_message(trades=None):
+    if trades is None:
+        coins = top_20_liquid_coins()
+        trades = find_best_trades(coins)
 
     if not trades:
         return "لا توجد صفقات واضحة حالياً وفق شروط الزخم ونسبة المخاطرة."
@@ -319,26 +368,48 @@ def build_trades_message():
         entry_price = t["entry"]["entry_price"]
         sl = t["sl"]
         tp = t["tp"]
-        rr = round(t["rr"], 1)
+        rr = t["rr"]
         reason = t["entry"]["reason"]
+
+        sl_pct = (sl - entry_price) / entry_price * 100 if t["trend"] == "bull" else (entry_price - sl) / entry_price * 100
+        tp_pct = (tp - entry_price) / entry_price * 100 if t["trend"] == "bull" else (entry_price - tp) / entry_price * 100
 
         title = "🏆 Trade #1" if i == 1 else "🥈 Trade #2"
         msg += f"{title} — {symbol}\n"
         msg += f"• Direction: {direction}\n"
-        msg += f"• Entry Type: {entry_type}\n"
-        msg += f"• Entry: {round(entry_price, 2)}\n"
-        msg += f"• Stop Loss: {round(sl, 2)}\n"
-        msg += f"• Take Profit: {round(tp, 2)}\n"
-        msg += f"• Risk/Reward: 1:{rr}\n"
+        msg += f"• Entry ({entry_type}): {fmt_price(entry_price)}\n"
+        msg += f"• S.L: {fmt_price(sl)} ({fmt_pct(-abs(sl_pct))})\n"
+        msg += f"• T.P: {fmt_price(tp)} ({fmt_pct(abs(tp_pct))})\n"
+        msg += f"• R:R: 1:{rr:.2f}\n"
+        msg += f"• التغير 1h: {fmt_pct(t['change_1h'])} | التغير 24h: {fmt_pct(t['change_24h'])}\n"
+        msg += f"• موقع السعر داخل الرينج: {t['pos_range']:.1f}%\n"
         msg += f"• السبب: {reason}\n\n"
         msg += "━━━━━━━━━━━━━━━━━━\n\n"
 
     msg += "⚠️ الملاحظة: إدارة رأس المال مسؤوليتك، والسوق قد يعيد اختبار مناطق السيولة قبل الانطلاق."
     return msg
 
+# ================== فحص تلقائي للفرص كل 5 دقائق ==================
+def auto_scan_loop():
+    global LAST_CHAT_ID
+    while True:
+        try:
+            if LAST_CHAT_ID is not None:
+                coins = top_20_liquid_coins()
+                trades = find_best_trades(coins)
+                if trades:
+                    msg = "⏰ فحص تلقائي — فرص مؤكدة:\n\n"
+                    msg += build_trades_message(trades)
+                    bot.send_message(LAST_CHAT_ID, msg)
+        except Exception as e:
+            print("Auto scan error:", e)
+        time.sleep(300)  # كل 5 دقائق
+
 # ================== هاندلر الأوامر ==================
 @bot.message_handler(commands=['start'])
 def start(m):
+    global LAST_CHAT_ID
+    LAST_CHAT_ID = m.chat.id
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     btn1 = types.KeyboardButton("تحليل")
     btn2 = types.KeyboardButton("صفقات")
@@ -347,6 +418,8 @@ def start(m):
 
 @bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
 def main_handler(m):
+    global LAST_CHAT_ID
+    LAST_CHAT_ID = m.chat.id
     if m.text == "تحليل":
         wait = bot.reply_to(m, "جاري تحليل السوق العام...")
         try:
@@ -364,4 +437,8 @@ def main_handler(m):
 
 # ================== تشغيل البوت ==================
 print("Bot is running...")
+
+# تشغيل حلقة الفحص التلقائي في ثريد منفصل
+threading.Thread(target=auto_scan_loop, daemon=True).start()
+
 bot.infinity_polling(skip_pending=True)
