@@ -130,6 +130,7 @@ def fetch_klines(symbol, interval="1h", limit=200):
                 continue
 
     return None
+
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
     o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
@@ -160,14 +161,14 @@ def detect_trend(df, lookback=50):
 
 def calc_percent_metrics(df):
     close_last = df["c"].iloc[-1]
-    close_24 = df["c"].iloc[-24] if len(df)>=24 else df["c"].iloc[0]
+    close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
     change_24 = (close_last - close_24) / close_24 * 100 if close_24 else 0
 
-    close_prev = df["c"].iloc[-2] if len(df)>=2 else df["c"].iloc[0]
+    close_prev = df["c"].iloc[-2] if len(df) >= 2 else df["c"].iloc[0]
     change_1h = (close_last - close_prev) / close_prev * 100 if close_prev else 0
 
     low = df["l"].min(); high = df["h"].max()
-    pos = (close_last - low) / (high - low) * 100 if high!=low else 50
+    pos = (close_last - low) / (high - low) * 100 if high != low else 50
 
     return change_1h, change_24, pos
 
@@ -180,11 +181,12 @@ def calc_atr(df, period=14):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
     return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
+
 def avg_volume(df, period=50):
     if df is None or len(df) < period:
         return None
     return df["v"].iloc[-period:].mean()
-    
+
 # FVG مبسط على فريم الساعة
 def detect_fvg_1h(df):
     # نموذج 3 شموع: الشمعة 1 – 2 – 3
@@ -198,13 +200,14 @@ def detect_fvg_1h(df):
     h3 = df["h"].iloc[-1]
     l3 = df["l"].iloc[-1]
 
-    # FVG صاعد: لو الشمعة 2 فتحت فجوة بين high الشمعة 1 و low الشمعة 3
+    # FVG صاعد
     bullish_fvg = l3 > h1 and l2 > h1
 
-    # FVG هابط: فجوة بين low الشمعة 1 و high الشمعة 3
+    # FVG هابط
     bearish_fvg = h3 < l1 and h2 < l1
 
     return bullish_fvg or bearish_fvg
+
 # ================== تحليل 1D ==================
 def analyze_symbol_1d(symbol):
     df = fetch_klines(symbol, "1d", 200)
@@ -230,35 +233,36 @@ def analyze_symbol_1d(symbol):
         "zone_1d": zone,
         "atr_1d": atr
     }
+
 # ================== تحليل 1h ==================
 def analyze_symbol_1h(symbol):
     df = fetch_klines(symbol, "1h", 200)
-        if not data_ok(df, 120):
+    if not data_ok(df, 120):
         return None
-    trend, momentum, desc = detect_trend(df)
 
+    trend, momentum, desc = detect_trend(df)
     ch1, ch24, pos = calc_percent_metrics(df)
     atr = calc_atr(df, period=14)
     fvg = detect_fvg_1h(df)
     vol_avg = avg_volume(df, 50)
-vol_last = df["v"].iloc[-1]
+    vol_last = df["v"].iloc[-1]
     funding = fetch_funding_rate(symbol)
+
     return {
-    return {
-    "symbol": symbol,
-    "trend": trend,
-    "momentum": momentum,
-    "description": desc,
-    "last_price": df["c"].iloc[-1],
-    "change_1h": ch1,
-    "change_24h": ch24,
-    "pos_range": pos,
-    "atr_1h": atr,
-    "has_fvg": fvg,
-    "funding": funding,
-    "vol_avg": vol_avg,
-    "vol_last": vol_last
-    }
+        "symbol": symbol,
+        "trend": trend,
+        "momentum": momentum,
+        "description": desc,
+        "last_price": df["c"].iloc[-1],
+        "change_1h": ch1,
+        "change_24h": ch24,
+        "pos_range": pos,
+        "atr_1h": atr,
+        "has_fvg": fvg,
+        "funding": funding,
+        "vol_avg": vol_avg,
+        "vol_last": vol_last
+            }
         
 # ================== تحليل 4h ==================
 def analyze_symbol_4h(symbol):
