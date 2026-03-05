@@ -10,6 +10,11 @@ import numpy as np
 import telebot
 from telebot import types
 LAST_SENT = {}
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running"
 def can_send(symbol):
     now = time.time()
     if symbol in LAST_SENT:
@@ -526,7 +531,15 @@ def home():
 
 def run_flask():
     app.run(host="0.0.0.0", port=10000)
+def start_bot():
+    bot.infinity_polling()
 
+threading.Thread(target=start_bot).start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+    
 # تشغيل Flask في Thread
 threading.Thread(target=run_flask).start()
 
