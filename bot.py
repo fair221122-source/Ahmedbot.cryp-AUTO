@@ -129,16 +129,24 @@ def calc_atr(df, period=14):
 
 # FVG مبسط على فريم الساعة
 def detect_fvg_1h(df):
+    # نموذج 3 شموع: الشمعة 1 – 2 – 3
     if len(df) < 3:
         return False
-    h_prev = df["h"].iloc[-2]
-    l_prev = df["l"].iloc[-2]
-    l_cur = df["l"].iloc[-1]
-    h_cur = df["h"].iloc[-1]
-    if l_cur > h_prev or h_cur < l_prev:
-        return True
-    return False
 
+    h1 = df["h"].iloc[-3]
+    l1 = df["l"].iloc[-3]
+    h2 = df["h"].iloc[-2]
+    l2 = df["l"].iloc[-2]
+    h3 = df["h"].iloc[-1]
+    l3 = df["l"].iloc[-1]
+
+    # FVG صاعد: لو الشمعة 2 فتحت فجوة بين high الشمعة 1 و low الشمعة 3
+    bullish_fvg = l3 > h1 and l2 > h1
+
+    # FVG هابط: فجوة بين low الشمعة 1 و high الشمعة 3
+    bearish_fvg = h3 < l1 and h2 < l1
+
+    return bullish_fvg or bearish_fvg
 # ================== تحليل 1D ==================
 def analyze_symbol_1d(symbol):
     df = fetch_klines(symbol, "1d", 200)
