@@ -331,8 +331,8 @@ def find_best_trades(symbols):
             continue
 
         df15 = fetch_klines(sym, "15m", 200)
-        if df15 is None:
-            continue
+        if not data_ok(df15, 80):
+    continue
 
         entry = detect_entry_15m(df15, info1["trend"])
         if not entry:
