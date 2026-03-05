@@ -1,3 +1,5 @@
+from flask import Flask
+import threading
 import os
 import time
 import logging
@@ -441,4 +443,23 @@ print("Bot is running...")
 # تشغيل حلقة الفحص التلقائي في ثريد منفصل
 threading.Thread(target=auto_scan_loop, daemon=True).start()
 
+print("Bot is running...")
+
+# تشغيل حلقة الفحص التلقائي في ثريد منفصل
+threading.Thread(target=auto_scan_loop, daemon=True).start()
+
+# ================== Flask Server لفتح Port ==================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running", 200
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+# تشغيل Flask في Thread
+threading.Thread(target=run_flask).start()
+
+# تشغيل البوت
 bot.infinity_polling(skip_pending=True)
