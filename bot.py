@@ -75,6 +75,12 @@ def fetch_klines(symbol, interval="1h", limit=200):
                 time.sleep(0.3)
                 continue
     return None
+    def data_ok(df, min_len=60):
+    return (
+        df is not None and
+        len(df) >= min_len and
+        df.isnull().sum().sum() == 0
+    )
 
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
