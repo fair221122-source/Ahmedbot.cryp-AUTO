@@ -142,7 +142,11 @@ def calc_atr(df, period=14):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
     return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
-
+def avg_volume(df, period=50):
+    if df is None or len(df) < period:
+        return None
+    return df["v"].iloc[-period:].mean()
+    
 # FVG مبسط على فريم الساعة
 def detect_fvg_1h(df):
     # نموذج 3 شموع: الشمعة 1 – 2 – 3
@@ -197,7 +201,10 @@ def analyze_symbol_1h(symbol):
     ch1, ch24, pos = calc_percent_metrics(df)
     atr = calc_atr(df, period=14)
     fvg = detect_fvg_1h(df)
+    vol_avg = avg_volume(df, 50)
+vol_last = df["v"].iloc[-1]
     funding = fetch_funding_rate(symbol)
+    return {
     return {
     "symbol": symbol,
     "trend": trend,
@@ -209,9 +216,11 @@ def analyze_symbol_1h(symbol):
     "pos_range": pos,
     "atr_1h": atr,
     "has_fvg": fvg,
-    "funding": funding
-}
-
+    "funding": funding,
+    "vol_avg": vol_avg,
+    "vol_last": vol_last
+    }
+        
 # ================== تحليل 4h ==================
 def analyze_symbol_4h(symbol):
     df = fetch_klines(symbol, "4h", 200)
@@ -229,15 +238,18 @@ def detect_entry_15m(df, trend):
     last = df.iloc[-5:]
     body, upper, lower = calc_candle_features(last)
 
+    vol_avg = avg_volume(df, 50)
+if vol_avg is None:
+    return None
     for i in range(4, -1, -1):
-        if trend=="bull" and lower.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] > last["o"].iloc[i]:
+        if trend=="bull" and lower.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] > last["o"].iloc[i] and last["v"].iloc[i] > vol_avg * 0.7:
             return {
                 "type":"long",
                 "entry_type":"فوري",
                 "entry_price":last["c"].iloc[i],
                 "reason":"شمعة رفض هبوط على 15m"
             }
-        if trend=="bear" and upper.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] < last["o"].iloc[i]:
+        if trend=="bear" and upper.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] < last["o"].iloc[i] and last["v"].iloc[i] > vol_avg * 0.7:
             return {
                 "type":"short",
                 "entry_type":"فوري",
@@ -303,6 +315,10 @@ if "funding" in t:
         score -= 10
     # إذا الاتجاه هابط والتمويل إيجابي قوي → نخفض النجاح
     if t["trend"] == "bear" and f > 0.0005:
+        score -= 10
+        # تأثير الحجم
+if "vol_avg" in t and "vol_last" in t:
+    if t["vol_last"] < t["vol_avg"] * 0.6:
         score -= 10
     score = max(50, min(95, score))
     return score
