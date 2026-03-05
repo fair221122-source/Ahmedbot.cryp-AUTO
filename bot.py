@@ -49,6 +49,28 @@ def top_20_liquid_coins():
         "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
     ]
 
+# ================== جلب الأخبار (CryptoPanic API) ==================
+def fetch_crypto_news():
+    try:
+        url = "https://cryptopanic.com/api/v1/posts/?auth_token=&public=true"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+
+        if "results" not in data:
+            return []
+
+        news_list = []
+        for item in data["results"][:5]:  # آخر 5 أخبار فقط
+            title = item.get("title", "")
+            link = item.get("url", "")
+            news_list.append({"title": title, "url": link})
+
+        return news_list
+
+    except Exception as e:
+        print(f"[NEWS ERROR] فشل في جلب الأخبار: {e}")
+        return []
+
 # ================== المؤشرات الفنية (RSI) ==================
 def calc_rsi(df, period=14):
     delta = df["c"].diff()
