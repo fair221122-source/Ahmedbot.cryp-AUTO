@@ -311,6 +311,7 @@ def calc_success_prob(t):
     score = 0
 
     rr = t["rr"]
+
     # R:R
     if rr >= 2.5:
         score += 30
@@ -335,7 +336,7 @@ def calc_success_prob(t):
     if t["momentum_1d"] == "strong":
         score += 10
 
-    # موقع السعر داخل الرينج (كلاستر سعري / سيولة)
+    # موقع السعر داخل الرينج
     pos = t["pos_range"]
     if 30 <= pos <= 70:
         score += 10
@@ -351,19 +352,21 @@ def calc_success_prob(t):
         score += 10
     if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
         score += 10
-# تأثير الـ Funding Rate
-if "funding" in t:
-    f = t["funding"]
-    # إذا الاتجاه صاعد والتمويل سلبي قوي → نخفض النجاح
-    if t["trend"] == "bull" and f < -0.0005:
-        score -= 10
-    # إذا الاتجاه هابط والتمويل إيجابي قوي → نخفض النجاح
-    if t["trend"] == "bear" and f > 0.0005:
-        score -= 10
-        # تأثير الحجم
-if "vol_avg" in t and "vol_last" in t:
-    if t["vol_last"] < t["vol_avg"] * 0.6:
-        score -= 10
+
+    # تأثير الـ Funding Rate
+    if "funding" in t:
+        f = t["funding"]
+        if t["trend"] == "bull" and f < -0.0005:
+            score -= 10
+        if t["trend"] == "bear" and f > 0.0005:
+            score -= 10
+
+    # تأثير الحجم
+    if "vol_avg" in t and "vol_last" in t:
+        if t["vol_last"] < t["vol_avg"] * 0.6:
+            score -= 10
+
+    # ضبط النتيجة بين 50 و 95
     score = max(50, min(95, score))
     return score
 
@@ -373,43 +376,63 @@ def choose_rr(info1, info4, info1d):
     rr = base
 
     # توافق الاتجاه بين 1D و 4H و 1H
-    if info1d["trend_1d"] == info4["trend_4h"] == info1["trend"] and \
-       info1["momentum"]=="strong" and info4["momentum_4h"]=="strong" and info1d["momentum_1d"]=="strong":
+    if (
+        info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]
+        and info1["momentum"] == "strong"
+        and info4["momentum_4h"] == "strong"
+        and info1d["momentum_1d"] == "strong"
+    ):
         rr = 5.0
+
     elif info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]:
         rr = 4.0
-    elif info1d["trend_1d"] == info4["trend_4h"] or info1d["trend_1d"] == info1["trend"]:
+
+    elif (
+        info1d["trend_1d"] == info4["trend_4h"]
+        or info1d["trend_1d"] == info1["trend"]
+    ):
         rr = 3.0
 
     # إذا الحركة اليومية قوية في اتجاه الترند
     if info1d["trend_1d"] == "bull" and info1["change_24h"] > 5:
         rr = max(rr, 4.0)
+
     if info1d["trend_1d"] == "bear" and info1["change_24h"] < -5:
         rr = max(rr, 4.0)
 
     return min(max(rr, 2.5), 7.0)
+
+
 
 # ================== أفضل الصفقات ==================
 def find_best_trades(symbols):
     results = []
 
     for sym in symbols:
+
+        # تحليل اليومي
         info1d = analyze_symbol_1d(sym)
         if not info1d:
             continue
 
+        # تحليل الساعة
         info1 = analyze_symbol_1h(sym)
         if not info1:
             continue
 
+        # تحليل الأربع ساعات
         info4 = analyze_symbol_4h(sym)
         if not info4:
             continue
 
         # شرط الاتجاه: لا ندخل عكس الاتجاه اليومي
-        if info1["trend"] != info1d["trend_1d"] or info4["trend_4h"] != info1d["trend_1d"]:
+        if (
+            info1["trend"] != info1d["trend_1d"]
+            or info4["trend_4h"] != info1d["trend_1d"]
+        ):
             continue
 
+        # بيانات 15 دقيقة
         df15 = fetch_klines(sym, "15m", 200)
         if not data_ok(df15, 80):
             continue
@@ -425,12 +448,13 @@ def find_best_trades(symbols):
         if atr is None or atr <= 0:
             continue
 
+        # اختيار R:R ديناميكي
         rr = choose_rr(info1, info4, info1d)
         if rr < 2.5:
             continue
 
         # ============================
-        # فلتر RSI (الجزء الثاني)
+        # فلتر RSI
         # ============================
         df_rsi = fetch_klines(sym, "1h", 200)
         if df_rsi is None or not data_ok(df_rsi):
