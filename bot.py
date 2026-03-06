@@ -262,7 +262,6 @@ def analyze_symbol_1h(symbol):
     funding = fetch_funding_rate(symbol)
 
     return {
-        return {
         "symbol": symbol,
         "trend": trend,
         "momentum": momentum,
