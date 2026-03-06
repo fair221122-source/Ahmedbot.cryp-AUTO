@@ -12,6 +12,7 @@ from telebot import types
 # ================== منع تكرار الإرسال ==================
 LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
 LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
+lock = threading.Lock()
 
 def can_send(key):
     now = time.time()
@@ -94,6 +95,18 @@ def rsi_filter(df, side):
         return False  # تشبع بيعي
 
     return True
+def data_ok(df, min_len=80):
+    """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
+    return df is not None and len(df) >= min_len
+
+def fetch_funding_rate(symbol):
+    """جلب رسوم التمويل من Binance API"""
+    try:
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+        r = requests.get(url, params={"symbol": symbol}, timeout=10)
+        return float(r.json().get("lastFundingRate", 0))
+    except:
+        return 0
 
 # ================== جلب البيانات ==================
 def fetch_klines(symbol, interval="1h", limit=200):
@@ -249,6 +262,7 @@ def analyze_symbol_1h(symbol):
     funding = fetch_funding_rate(symbol)
 
     return {
+        return {
         "symbol": symbol,
         "trend": trend,
         "momentum": momentum,
@@ -262,7 +276,8 @@ def analyze_symbol_1h(symbol):
         "funding": funding,
         "vol_avg": vol_avg,
         "vol_last": vol_last
-            }
+    }
+
         
 # ================== تحليل 4h ==================
 def analyze_symbol_4h(symbol):
