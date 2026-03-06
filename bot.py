@@ -277,34 +277,57 @@ def analyze_symbol_4h(symbol):
         "momentum_4h": momentum,
         "desc_4h": desc
     }
+
+
 # ================== دخول 15m ==================
 def detect_entry_15m(df, trend):
     last = df.iloc[-5:]
     body, upper, lower = calc_candle_features(last)
 
     vol_avg = avg_volume(df, 50)
-if vol_avg is None:
-    return None
+    if vol_avg is None:
+        return None
+
     for i in range(4, -1, -1):
-        if trend=="bull" and lower.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] > last["o"].iloc[i] and last["v"].iloc[i] > vol_avg * 0.7:
+
+        # دخول شراء (bullish)
+        if (
+            trend == "bull"
+            and lower.iloc[i] > body.iloc[i] * 1.5
+            and last["c"].iloc[i] > last["o"].iloc[i]
+            and last["v"].iloc[i] > vol_avg * 0.7
+        ):
             return {
-                "type":"long",
-                "entry_type":"فوري",
-                "entry_price":last["c"].iloc[i],
-                "reason":"شمعة رفض هبوط على 15m"
+                "type": "long",
+                "entry_type": "فوري",
+                "entry_price": last["c"].iloc[i],
+                "reason": "شمعة رفض هبوط على 15m"
             }
-        if trend=="bear" and upper.iloc[i] > body.iloc[i]*1.5 and last["c"].iloc[i] < last["o"].iloc[i] and last["v"].iloc[i] > vol_avg * 0.7:
+
+        # دخول بيع (bearish)
+        if (
+            trend == "bear"
+            and upper.iloc[i] > body.iloc[i] * 1.5
+            and last["c"].iloc[i] < last["o"].iloc[i]
+            and last["v"].iloc[i] > vol_avg * 0.7
+        ):
             return {
-                "type":"short",
-                "entry_type":"فوري",
-                "entry_price":last["c"].iloc[i],
-                "reason":"شمعة رفض صعود على 15m"
+                "type": "short",
+                "entry_type": "فوري",
+                "entry_price": last["c"].iloc[i],
+                "reason": "شمعة رفض صعود على 15m"
             }
+
     return None
 
+
 # ================== تنسيق ==================
-def fmt_price(x): return f"{x:.4f}"
-def fmt_pct(x): return f"{x:.2f}%"
+def fmt_price(x):
+    return f"{x:.4f}"
+
+def fmt_pct(x):
+    return f"{x:.2f}%"
+
 
 # ================== حساب نسبة النجاح المتوقعة ==================
 def calc_success_prob(t):
