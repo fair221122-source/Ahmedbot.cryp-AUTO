@@ -494,59 +494,67 @@ def find_best_trades(symbols):
         if rr < 2.5:
             continue
 
-        # حساب SL و TP
-        if info1["trend"] == "UP":
-            sl = ep - atr
-            tp = ep + (atr * rr)
-            direction = "Long"
-        else:
-            sl = ep + atr
-            tp = ep - (atr * rr)
-            direction = "Short"
-
-        # حساب نسبة النجاح
-        success_rate = calculate_success_rate(info1, info4, info1d)
-        if success_rate < 70:
+        # ============================
+        # فلتر RSI
+        # ============================
+        df_rsi = fetch_klines(sym, "1h", 200)
+        if df_rsi is None or not data_ok(df_rsi):
             continue
 
-        # إضافة الصفقة المقبولة
+        side = "LONG" if info1["trend"] == "bull" else "SHORT"
+        if not rsi_filter(df_rsi, side):
+            continue
+        # ============================
+
+        # ============================
+        # فلتر الأخبار (الجزء الثالث)
+        # ============================
+        news = fetch_crypto_news()
+        if news:
+            bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
+            if len(bad_news) > 0:
+                print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
+                continue
+        # ============================
+
+        if info1["trend"] == "bull":
+            sl = ep - 1.5 * atr
+            tp = ep + rr * 1.5 * atr
+        else:
+            sl = ep + 1.5 * atr
+            tp = ep - rr * 1.5 * atr
+
+        if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
+           (info1["trend"] == "bear" and not (tp < ep < sl)):
+            continue
+
+        real_rr = abs((tp - ep) / (ep - sl))
+        if real_rr < 2.5:
+            continue
+
         results.append({
             "symbol": sym,
-            "direction": direction,
-            "entry": ep,
+            "trend": info1["trend"],
+            "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
+            "momentum": info1["momentum"],
+            "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
+            "entry": entry,
             "sl": sl,
             "tp": tp,
-            "rr": rr,
-            "success_rate": success_rate,
-            "reason": entry["reason"]
+            "rr": real_rr,
+            "change_1h": info1["change_1h"],
+            "change_24h": info1["change_24h"],
+            "pos_range": info1["pos_range"],
+            "has_fvg_1h": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"]
         })
 
-    # ترتيب الصفقات حسب نسبة النجاح
-    results.sort(key=lambda x: x["success_rate"], reverse=True)
+        time.sleep(0.05)
 
-    # إرجاع أفضل صفقتين فقط
+    results = sorted(results, key=lambda x: x["rr"], reverse=True)
     return results[:2]
-
-
-def build_trades_message(trades):
-    if not trades:
-        return "لا توجد صفقات متاحة حالياً."
-
-    message = "📊 أفضل الصفقات الحالية:\n\n"
-
-    for trade in trades:
-        message += f"""🎯 {trade['symbol']} — {trade['direction']} (فوري)
-Entry: {trade['entry']:.4f}
-SL: {trade['sl']:.4f}
-TP: {trade['tp']:.4f}
-R:R = {trade['rr']}
-نسبة النجاح المتوقعة: {trade['success_rate']}%
-📌 السبب: {trade['reason']}
------------------------------
-
-"""
-
-    return message
 # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
     out = []
@@ -804,3 +812,4 @@ threading.Thread(target=start_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
