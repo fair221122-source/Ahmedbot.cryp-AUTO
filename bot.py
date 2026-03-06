@@ -680,19 +680,25 @@ def build_auto_scan_message(trades):
 # ================== الفحص التلقائي ==================
 def auto_scan_loop():
     global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
+
     while True:
         try:
             if LAST_CHAT_ID:
                 trades = find_best_trades(top_20_liquid_coins())
+
                 if trades:
                     now = time.time()
                     filtered = []
+
                     for t in trades:
                         sig = make_signature(t)
+
                         with lock:
-    if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
-        continue
-    LAST_TRADE_SIGNATURE[sig] = now
+                            if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
+                                continue
+
+                            LAST_TRADE_SIGNATURE[sig] = now
+
                         filtered.append(t)
 
                     if filtered:
@@ -705,48 +711,63 @@ def auto_scan_loop():
 
         time.sleep(600)
 
+
+
 # ================== الهاندلرز ==================
 @bot.message_handler(commands=['start'])
 def start(m):
     global LAST_CHAT_ID
     LAST_CHAT_ID = m.chat.id
+
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("تحليل","صفقات")
+    kb.add("تحليل", "صفقات")
+
     bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
 
-@bot.message_handler(func=lambda m: m.text in ["تحليل","صفقات"])
+
+
+@bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
 def main_handler(m):
     global LAST_CHAT_ID
     LAST_CHAT_ID = m.chat.id
 
-    if m.text=="تحليل":
+    if m.text == "تحليل":
         wait = bot.reply_to(m, "جاري تحليل السوق على (1D + 4H + 1H + 15M)...")
+
         try:
             msg = build_analysis_message()
             bot.edit_message_text(msg, m.chat.id, wait.message_id)
+
         except Exception as e:
             bot.edit_message_text("حدث خطأ أثناء التحليل.", m.chat.id, wait.message_id)
             print("Analysis error:", e)
 
     else:
         wait = bot.reply_to(m, "جاري البحث عن أفضل الصفقات...")
+
         try:
             msg = build_trades_message()
             bot.edit_message_text(msg, m.chat.id, wait.message_id)
+
         except Exception as e:
             bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
             print("Trades error:", e)
+
+
 
 # ================== التشغيل ==================
 print("Bot is running...")
 
 threading.Thread(target=auto_scan_loop, daemon=True).start()
 
+
 def start_bot():
     bot.infinity_polling(skip_pending=True)
 
+
 threading.Thread(target=start_bot, daemon=True).start()
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT",5000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
