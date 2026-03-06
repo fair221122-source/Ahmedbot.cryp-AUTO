@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import telebot
 from telebot import types
+session = requests.Session()
 
 # ================== منع تكرار الإرسال ==================
 LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
@@ -109,18 +110,22 @@ def fetch_funding_rate(symbol):
         return 0
 
 # ================== جلب البيانات ==================
+# جلسة اتصال ثابتة مع Binance
+session = requests.Session()
+
 def fetch_klines(symbol, interval="1h", limit=200):
     urls = [
         "https://fapi.binance.com/fapi/v1/klines",
         "https://fapi1.binance.com/fapi/v1/klines",
         "https://fapi2.binance.com/fapi/v1/klines"
     ]
+
     params = {"symbol": symbol, "interval": interval, "limit": limit}
 
     for url in urls:
-        for _ in range(3):
+        for attempt in range(3):  # إعادة المحاولة 3 مرات
             try:
-                r = requests.get(url, params=params, timeout=10)
+                r = session.get(url, params=params, timeout=10)
                 data = r.json()
 
                 # خطأ من Binance API
@@ -138,12 +143,11 @@ def fetch_klines(symbol, interval="1h", limit=200):
                 return df[["o","h","l","c","v"]]
 
             except Exception as e:
-                print(f"[API ERROR] فشل في جلب بيانات {symbol} — {interval}: {e}")
+                print(f"[API ERROR] محاولة {attempt+1} لجلب {symbol} — {interval} فشلت: {e}")
                 time.sleep(0.3)
                 continue
 
     return None
-
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
     o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
