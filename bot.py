@@ -620,6 +620,7 @@ def find_best_trades(symbols):
         real_rr = abs((tp - ep) / (ep - sl))
         if real_rr < 2.5:
             continue
+            
             # حساب نسبة النجاح
 success = calc_success_prob({
     "rr": real_rr,
