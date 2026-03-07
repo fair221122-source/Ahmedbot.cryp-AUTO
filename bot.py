@@ -669,8 +669,7 @@ def find_best_trades(symbols):
         })
 
         time.sleep(0.05)
-
-        results = sorted(results, key=lambda x: x["rr"], reverse=True)
+            results = sorted(results, key=lambda x: x["rr"], reverse=True)
         return results[:2]
 
 # ================== تحليل السوق ==================
