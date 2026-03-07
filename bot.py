@@ -606,13 +606,15 @@ def find_best_trades(symbols):
                 continue
         # ============================
 
-    if info1["trend"] == "bull":
+        # حساب SL و TP
+        if info1["trend"] == "bull":
             sl = ep - 1.5 * atr
             tp = ep + rr * 1.5 * atr
         else:
             sl = ep + 1.5 * atr
             tp = ep - rr * 1.5 * atr
 
+        # التأكد من أن نقطة الدخول بين SL و TP
         if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
            (info1["trend"] == "bear" and not (tp < ep < sl)):
             continue
@@ -645,6 +647,18 @@ def find_best_trades(symbols):
         # تخزين نسبة النجاح داخل الصفقة
         t_success = success
 
+        # صفقة معلقة بانحراف 1%
+        if info1["trend"] == "bull":
+            pending_price = ep * 0.99  # شراء من أسفل 1%
+        else:
+            pending_price = ep * 1.01  # بيع من أعلى 1%
+
+        pending_entry = {
+            "entry_type": "معلق",
+            "entry_price": pending_price,
+            "reason": entry["reason"] + " (انحراف 1%)"
+        }
+
         results.append({
             "symbol": sym,
             "trend": info1["trend"],
@@ -653,7 +667,8 @@ def find_best_trades(symbols):
             "momentum": info1["momentum"],
             "momentum_4h": info4["momentum_4h"],
             "momentum_1d": info1d["momentum_1d"],
-            "entry": entry,
+            "entry": entry,                 # دخول فوري
+            "pending_entry": pending_entry, # دخول معلق
             "sl": sl,
             "tp": tp,
             "rr": real_rr,
@@ -665,12 +680,14 @@ def find_best_trades(symbols):
             "funding": info1["funding"],
             "vol_avg": info1["vol_avg"],
             "vol_last": info1["vol_last"],
+            "last_price": info1["last_price"],
             "success": t_success
         })
 
         time.sleep(0.05)
-            results = sorted(results, key=lambda x: x["rr"], reverse=True)
-        return results[:2]
+
+    results = sorted(results, key=lambda x: x["rr"], reverse=True)
+    return results[:2]
 
 # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
@@ -792,6 +809,7 @@ def build_trades_message(trades=None):
 
         rank_icon = "🥇" if i == 1 else "🥈"
 
+        # الصفقة الفورية
         msg += f"{rank_icon} {t['symbol']} — {direction_icon} ({t['entry']['entry_type']})\n\n"
         msg += f"Entry: {fmt_price(ep)}\n"
         msg += f"SL: {fmt_price(sl)}\n"
@@ -804,6 +822,20 @@ def build_trades_message(trades=None):
         if t.get("has_fvg_1h"):
             extra_reason += " + وجود FVG على 1H"
         msg += f"📌 السبب: {extra_reason} + {reason}\n\n"
+
+        # خط أفقي يفصل بين الصفقتين اليدويتين
+        if "pending_entry" in t:
+            msg += "────────────\n\n"
+            p = t["pending_entry"]["entry_price"]
+            msg += f"📌 صفقة معلقة (انحراف 1%) — ({t['pending_entry']['entry_type']})\n\n"
+            msg += f"Entry: {fmt_price(p)}\n"
+            msg += f"SL: {fmt_price(sl)}\n"
+            msg += f"TP: {fmt_price(tp)}\n"
+            msg += f"R:R (تقريبي) = 1:{rr:.2f}\n"
+            msg += f"📩 عند وصول السعر لهذه المنطقة ستظهر رسالة تأكيد دخول.\n\n"
+
+        if i != len(trades):
+            msg += "==============================\n\n"
 
     return msg
 
@@ -863,6 +895,24 @@ def auto_scan_loop():
                         msg = build_auto_scan_message(filtered)
                         if msg and can_send("auto_scan_msg"):
                             bot.send_message(LAST_CHAT_ID, msg)
+
+                        # تأكيد دخول للصفقات المعلقة عند وصول السعر
+                        for t in filtered:
+                            if "pending_entry" in t and "last_price" in t:
+                                pe = t["pending_entry"]["entry_price"]
+                                lp = t["last_price"]
+                                if t["trend"] == "bull" and lp <= pe:
+                                    if can_send(f"pending_confirm_{t['symbol']}"):
+                                        bot.send_message(
+                                            LAST_CHAT_ID,
+                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
+                                        )
+                                if t["trend"] == "bear" and lp >= pe:
+                                    if can_send(f"pending_confirm_{t['symbol']}"):
+                                        bot.send_message(
+                                            LAST_CHAT_ID,
+                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
+                                        )
 
         except Exception as e:
             print("Auto scan error:", e)
