@@ -607,71 +607,71 @@ def find_best_trades(symbols):
         # ============================
 
 if info1["trend"] == "bull":
-    sl = ep - 1.5 * atr
-    tp = ep + rr * 1.5 * atr
-else:
-    sl = ep + 1.5 * atr
-    tp = ep - rr * 1.5 * atr
+            sl = ep - 1.5 * atr
+            tp = ep + rr * 1.5 * atr
+        else:
+            sl = ep + 1.5 * atr
+            tp = ep - rr * 1.5 * atr
 
-if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
-   (info1["trend"] == "bear" and not (tp < ep < sl)):
-    continue
+        if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
+           (info1["trend"] == "bear" and not (tp < ep < sl)):
+            continue
 
-real_rr = abs((tp - ep) / (ep - sl))
-if real_rr < 2.5:
-    continue
+        real_rr = abs((tp - ep) / (ep - sl))
+        if real_rr < 2.5:
+            continue
 
-# حساب نسبة النجاح
-success = calc_success_prob({
-    "rr": real_rr,
-    "trend": info1["trend"],
-    "trend_4h": info4["trend_4h"],
-    "trend_1d": info1d["trend_1d"],
-    "momentum": info1["momentum"],
-    "momentum_4h": info4["momentum_4h"],
-    "momentum_1d": info1d["momentum_1d"],
-    "pos_range": info1["pos_range"],
-    "has_fvg_1h": info1["has_fvg"],
-    "zone_1d": info1d["zone_1d"],
-    "funding": info1["funding"],
-    "vol_avg": info1["vol_avg"],
-    "vol_last": info1["vol_last"]
-})
+        # حساب نسبة النجاح
+        success = calc_success_prob({
+            "rr": real_rr,
+            "trend": info1["trend"],
+            "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
+            "momentum": info1["momentum"],
+            "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
+            "pos_range": info1["pos_range"],
+            "has_fvg_1h": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"],
+            "funding": info1["funding"],
+            "vol_avg": info1["vol_avg"],
+            "vol_last": info1["vol_last"]
+        })
 
-# فلتر نسبة النجاح
-if success < 70:
-    continue
+        # فلتر نسبة النجاح
+        if success < 70:
+            continue
 
-# تخزين نسبة النجاح داخل الصفقة
-t_success = success
+        # تخزين نسبة النجاح داخل الصفقة
+        t_success = success
 
-results.append({
-    "symbol": sym,
-    "trend": info1["trend"],
-    "trend_4h": info4["trend_4h"],
-    "trend_1d": info1d["trend_1d"],
-    "momentum": info1["momentum"],
-    "momentum_4h": info4["momentum_4h"],
-    "momentum_1d": info1d["momentum_1d"],
-    "entry": entry,
-    "sl": sl,
-    "tp": tp,
-    "rr": real_rr,
-    "change_1h": info1["change_1h"],
-    "change_24h": info1["change_24h"],
-    "pos_range": info1["pos_range"],
-    "has_fvg_1h": info1["has_fvg"],
-    "zone_1d": info1d["zone_1d"],
-    "funding": info1["funding"],
-    "vol_avg": info1["vol_avg"],
-    "vol_last": info1["vol_last"],
-    "success": t_success
-})
+        results.append({
+            "symbol": sym,
+            "trend": info1["trend"],
+            "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
+            "momentum": info1["momentum"],
+            "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "rr": real_rr,
+            "change_1h": info1["change_1h"],
+            "change_24h": info1["change_24h"],
+            "pos_range": info1["pos_range"],
+            "has_fvg_1h": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"],
+            "funding": info1["funding"],
+            "vol_avg": info1["vol_avg"],
+            "vol_last": info1["vol_last"],
+            "success": t_success
+        })
 
-time.sleep(0.05)
+        time.sleep(0.05)
 
-results = sorted(results, key=lambda x: x["rr"], reverse=True)
-return results[:2]
+        results = sorted(results, key=lambda x: x["rr"], reverse=True)
+        return results[:2]
 
 # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
