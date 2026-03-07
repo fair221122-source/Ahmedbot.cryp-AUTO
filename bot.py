@@ -96,6 +96,7 @@ def rsi_filter(df, side):
         return False  # تشبع بيعي
 
     return True
+
 def data_ok(df, min_len=80):
     """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
     return df is not None and len(df) >= min_len
@@ -148,6 +149,7 @@ def fetch_klines(symbol, interval="1h", limit=200):
                 continue
 
     return None
+
 # ================== أدوات التحليل ==================
 def calc_candle_features(df):
     o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
@@ -225,6 +227,95 @@ def detect_fvg_1h(df):
 
     return bullish_fvg or bearish_fvg
 
+# ================== فلاتر إضافية متقدمة (FVG + OB + Liquidity) ==================
+def check_fvg_risk(df, entry_price, trend):
+    """
+    يتحقق إذا كان هناك FVG قريب قد يرجّع السعر ويضرب الستوب.
+    فلتر متوسط القوة.
+    """
+    if len(df) < 10:
+        return False
+
+    last3 = df.iloc[-3:]
+    h1, l1 = last3["h"].iloc[0], last3["l"].iloc[0]
+    h3, l3 = last3["h"].iloc[2], last3["l"].iloc[2]
+
+    if trend == "bull":
+        # إذا كان الدخول داخل منطقة فجوة محتملة تحت السعر
+        if l3 < entry_price < h1:
+            return True
+
+    if trend == "bear":
+        # إذا كان الدخول داخل منطقة فجوة محتملة فوق السعر
+        if l1 < entry_price < h3:
+            return True
+
+    return False
+
+def check_order_block(df, entry_price, trend):
+    """
+    يتحقق إذا كان الدخول قريب من Order Block قوي.
+    فلتر أقوى قليلاً، يركز على آخر 20 شمعة.
+    """
+    if len(df) < 20:
+        return False
+
+    last20 = df.iloc[-20:]
+    rng = last20["h"].max() - last20["l"].min()
+    if rng == 0:
+        return False
+
+    threshold = rng * 0.12  # مسافة قريبة نسبيًا
+
+    if trend == "bull":
+        ob_low = last20["l"].min()
+        if abs(entry_price - ob_low) <= threshold:
+            return True
+
+    if trend == "bear":
+        ob_high = last20["h"].max()
+        if abs(entry_price - ob_high) <= threshold:
+            return True
+
+    return False
+
+def check_liquidity_cluster(df, entry_price):
+    """
+    يتحقق إذا كان الدخول قريب من منطقة سيولة مزدحمة (كلاستر).
+    فلتر متوسط، يمنع الدخول في قلب الكلاستر.
+    """
+    if len(df) < 30:
+        return False
+
+    last30 = df.iloc[-30:]
+    cluster_low = last30["l"].mean()
+    cluster_high = last30["h"].mean()
+
+    # إذا كان الدخول داخل نطاق الكلاستر المتوسط
+    if cluster_low <= entry_price <= cluster_high:
+        return True
+
+    return False
+
+def extra_filters(df15, entry_price, trend):
+    """
+    يجمع كل الفلاتر الإضافية.
+    يرجع True إذا الصفقة خطيرة ويجب رفضها.
+    """
+    # خطر FVG قريب
+    if check_fvg_risk(df15, entry_price, trend):
+        return True
+
+    # خطر Order Block قريب
+    if check_order_block(df15, entry_price, trend):
+        return True
+
+    # خطر Liquidity Cluster
+    if check_liquidity_cluster(df15, entry_price):
+        return True
+
+    return False
+
 # ================== تحليل 1D ==================
 def analyze_symbol_1d(symbol):
     df = fetch_klines(symbol, "1d", 200)
@@ -281,7 +372,6 @@ def analyze_symbol_1h(symbol):
         "vol_last": vol_last
     }
 
-        
 # ================== تحليل 4h ==================
 def analyze_symbol_4h(symbol):
     df = fetch_klines(symbol, "4h", 200)
@@ -295,7 +385,6 @@ def analyze_symbol_4h(symbol):
         "momentum_4h": momentum,
         "desc_4h": desc
     }
-
 
 # ================== دخول 15m ==================
 def detect_entry_15m(df, trend):
@@ -338,14 +427,12 @@ def detect_entry_15m(df, trend):
 
     return None
 
-
 # ================== تنسيق ==================
 def fmt_price(x):
     return f"{x:.4f}"
 
 def fmt_pct(x):
     return f"{x:.2f}%"
-
 
 # ================== حساب نسبة النجاح المتوقعة ==================
 def calc_success_prob(t):
@@ -443,8 +530,6 @@ def choose_rr(info1, info4, info1d):
 
     return min(max(rr, 2.5), 7.0)
 
-
-
 # ================== أفضل الصفقات ==================
 def find_best_trades(symbols):
     results = []
@@ -483,6 +568,10 @@ def find_best_trades(symbols):
             continue
 
         ep = entry["entry_price"]
+
+        # فلاتر إضافية متقدمة (FVG + OB + Liquidity)
+        if extra_filters(df15, ep, info1["trend"]):
+            continue
 
         # ATR آمن من فريم الساعة
         atr = info1["atr_1h"]
@@ -548,13 +637,17 @@ def find_best_trades(symbols):
             "change_24h": info1["change_24h"],
             "pos_range": info1["pos_range"],
             "has_fvg_1h": info1["has_fvg"],
-            "zone_1d": info1d["zone_1d"]
+            "zone_1d": info1d["zone_1d"],
+            "funding": info1["funding"],
+            "vol_avg": info1["vol_avg"],
+            "vol_last": info1["vol_last"]
         })
 
         time.sleep(0.05)
 
     results = sorted(results, key=lambda x: x["rr"], reverse=True)
     return results[:2]
+
 # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
     out = []
@@ -752,8 +845,6 @@ def auto_scan_loop():
 
         time.sleep(600)
 
-
-
 # ================== الهاندلرز ==================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -764,8 +855,6 @@ def start(m):
     kb.add("تحليل", "صفقات")
 
     bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
-
-
 
 @bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
 def main_handler(m):
@@ -794,22 +883,16 @@ def main_handler(m):
             bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
             print("Trades error:", e)
 
-
-
 # ================== التشغيل ==================
 print("Bot is running...")
 
 threading.Thread(target=auto_scan_loop, daemon=True).start()
 
-
 def start_bot():
     bot.infinity_polling(skip_pending=True)
 
-
 threading.Thread(target=start_bot, daemon=True).start()
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
