@@ -620,6 +620,26 @@ def find_best_trades(symbols):
         real_rr = abs((tp - ep) / (ep - sl))
         if real_rr < 2.5:
             continue
+            # حساب نسبة النجاح
+success = calc_success_prob({
+    "rr": real_rr,
+    "trend": info1["trend"],
+    "trend_4h": info4["trend_4h"],
+    "trend_1d": info1d["trend_1d"],
+    "momentum": info1["momentum"],
+    "momentum_4h": info4["momentum_4h"],
+    "momentum_1d": info1d["momentum_1d"],
+    "pos_range": info1["pos_range"],
+    "has_fvg_1h": info1["has_fvg"],
+    "zone_1d": info1d["zone_1d"],
+    "funding": info1["funding"],
+    "vol_avg": info1["vol_avg"],
+    "vol_last": info1["vol_last"]
+})
+
+# فلتر نسبة النجاح
+if success < 70:
+    continue
 
         results.append({
             "symbol": sym,
