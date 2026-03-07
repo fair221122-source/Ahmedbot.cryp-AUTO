@@ -606,7 +606,7 @@ def find_best_trades(symbols):
                 continue
         # ============================
 
-        if info1["trend"] == "bull":
+if info1["trend"] == "bull":
     sl = ep - 1.5 * atr
     tp = ep + rr * 1.5 * atr
 else:
