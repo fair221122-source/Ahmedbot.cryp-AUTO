@@ -642,6 +642,9 @@ success = calc_success_prob({
 if success < 70:
     continue
 
+# تخزين نسبة النجاح داخل الصفقة
+t_success = success
+
         results.append({
             "symbol": sym,
             "trend": info1["trend"],
@@ -784,7 +787,7 @@ def build_trades_message(trades=None):
         ep = t["entry"]["entry_price"]
         sl = t["sl"]; tp = t["tp"]
         rr = t["rr"]
-        success = calc_success_prob(t)
+        success = t["success"]
         direction_icon = "🟢" if t["trend"]=="bull" else "🔴"
 
         rank_icon = "🥇" if i == 1 else "🥈"
@@ -813,7 +816,7 @@ def build_auto_scan_message(trades):
     ep = t["entry"]["entry_price"]
     sl = t["sl"]; tp = t["tp"]
     rr = t["rr"]
-    success = calc_success_prob(t)
+    success = t["success"]
     direction = "Long" if t["trend"]=="bull" else "Short"
 
     msg = "⏰ فحص تلقائي — فرصة جديدة\n\n"
