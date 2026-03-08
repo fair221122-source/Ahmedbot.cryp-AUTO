@@ -564,8 +564,18 @@ def find_best_trades(symbols):
             continue
 
         entry = detect_entry_15m(df15, info1["trend"])
-        if not entry:
-            continue
+            # منطق اختيار نوع الصفقة (فوري أو معلق)
+            if entry:
+                final_type = "فوري"
+                final_entry_price = entry["entry_price"]
+                final_reason = entry["reason"]
+            else:
+                final_type = "معلق"
+                if info1["trend"] == "bull":
+                    final_entry_price = info1["last_price"] * 0.99
+                else:
+                    final_entry_price = info1["last_price"] * 1.01
+                final_reason = "انحراف 1%"
 
         ep = entry["entry_price"]
 
@@ -667,8 +677,9 @@ def find_best_trades(symbols):
             "momentum": info1["momentum"],
             "momentum_4h": info4["momentum_4h"],
             "momentum_1d": info1d["momentum_1d"],
-            "entry": entry,                 # دخول فوري
-            "pending_entry": pending_entry, # دخول معلق
+            "type": final_type,
+            "entry_price": final_entry_price,
+            "reason": final_reason,
             "sl": sl,
             "tp": tp,
             "rr": real_rr,
@@ -790,185 +801,156 @@ def build_analysis_message():
 
     return msg
 
-# ================== دوال تنسيق الصفقات الجديدة ==================
-def format_instant_trade(symbol, direction_icon, entry, sl, tp, rr, success, reason):
-    return f"""
-{symbol} — {direction_icon} (فوري)
+# ================== رسالة الصفقات اليدوية ==================
+    def build_trades_message(trades=None):
+        if trades is None:
+            trades = find_best_trades(top_20_liquid_coins())
 
-Entry: {fmt_price(entry)}
-SL: {fmt_price(sl)}
-TP: {fmt_price(tp)}
-R:R = 1:{rr:.2f}
-نسبة النجاح المتوقعة: {success:.0f}%
+        if not trades:
+            return "لا توجد صفقات واضحة حالياً."
 
-📌 السبب: {reason}
-""".strip()
+        msg = ""
 
-def format_pending_trade(symbol, direction_icon, entry, sl, tp, rr, success, reason):
-    return f"""
-{symbol} — {direction_icon} (معلق)
+        for i, t in enumerate(trades, 1):
+            symbol = t["symbol"]
+            trend = t["trend"]
+            direction_icon = "🟢" if trend == "bull" else "🔴"
 
-Entry: {fmt_price(entry)}
-SL: {fmt_price(sl)}
-TP: {fmt_price(tp)}
-R:R = 1:{rr:.2f}
-نسبة النجاح المتوقعة: {success:.0f}%
+            # قراءة البيانات الجديدة
+            ep = t["entry_price"]
+            sl = t["sl"]
+            tp = t["tp"]
+            rr = t["rr"]
+            success = t["success"]
+            reason = t["reason"]
 
-📌 السبب: {reason}
-سيتم إرسال رسالة تأكيد دخول عند وصول السعر إلى منطقة الدخول.
-""".strip()
+            # تحديد نوع الصفقة (فوري / معلق)
+            if t["type"] == "فوري":
+                trade_text = format_instant_trade(
+                    symbol, direction_icon, ep, sl, tp, rr, success,
+                    f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
+                )
+            else:
+                trade_text = format_pending_trade(
+                    symbol, direction_icon, ep, sl, tp, rr, success,
+                    f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
+                )
 
-# ================== رسالة الصفقات اليدوية (إصدار جديد) ==================
-def build_trades_message(trades=None):
-    if trades is None:
-        trades = find_best_trades(top_20_liquid_coins())
+            # إضافة الوسام
+            msg += "🥇 " if i == 1 else "🥈 "
+            msg += trade_text + "\n\n"
 
-    if not trades:
-        return "لا توجد صفقات واضحة حالياً."
+            # فاصل بين الصفقات
+            if i != len(trades):
+                msg += "==============================\n\n"
 
-    msg = ""
+        return msg.strip()
 
-    for i, t in enumerate(trades, 1):
+# ================== رسالة الفحص التلقائي ==================
+    def build_auto_scan_message(trades):
+        if not trades:
+            return None
+
+        t = trades[0]
         symbol = t["symbol"]
         trend = t["trend"]
+        direction = "Long" if trend == "bull" else "Short"
         direction_icon = "🟢" if trend == "bull" else "🔴"
 
-        # الفوري
-        ep = t["entry"]["entry_price"]
+        ep = t["entry_price"]
         sl = t["sl"]
         tp = t["tp"]
         rr = t["rr"]
         success = t["success"]
-        reason = t["entry"]["reason"]
+        reason = t["reason"]
 
-        trade_text = format_instant_trade(
-            symbol, direction_icon, ep, sl, tp, rr, success,
-            f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
-        )
+        last_price = t["last_price"]
+        diff = abs(last_price - ep) / ep * 100
+        is_pending = diff > 0.1 and diff <= 1
 
-        msg += "🥇 " if i == 1 else "🥈 "
-        msg += trade_text + "\n\n"
+        if is_pending:
+            return f"""
+    ⏰ فحص تلقائي — فرصة جديدة (معلق)
 
-        # المعلّق (إن وجد)
-        if "pending_entry" in t:
-            p = t["pending_entry"]["entry_price"]
-            pending_reason = t["pending_entry"]["reason"]
+    🎯 {symbol} — {direction_icon} {direction}
+    Entry: {fmt_price(ep)}
+    SL: {fmt_price(sl)}
+    TP: {fmt_price(tp)}
+    R:R = 1:{rr:.2f}
+    نسبة النجاح المتوقعة: {success:.0f}%
 
-            pending_text = format_pending_trade(
-                symbol, direction_icon, p, sl, tp, rr, success,
-                f"توافق الإطارات الزمنية 1D+4H+1H + {pending_reason}"
-            )
+    📌 السبب: {reason}
+    سيتم إرسال تذكير عند وصول السعر إلى منطقة الدخول.
+    """.strip()
 
-            msg += pending_text + "\n\n"
+        else:
+            return f"""
+    ⏰ فحص تلقائي — فرصة جديدة (فوري)
 
-        if i != len(trades):
-            msg += "==============================\n\n"
+    🎯 {symbol} — {direction_icon} {direction}
+    Entry: {fmt_price(ep)}
+    SL: {fmt_price(sl)}
+    TP: {fmt_price(tp)}
+    R:R = 1:{rr:.2f}
+    نسبة النجاح المتوقعة: {success:.0f}%
 
-    return msg.strip()
-
-# ================== رسالة الفحص التلقائي (إصدار جديد) ==================
-def build_auto_scan_message(trades):
-    if not trades:
-        return None
-
-    t = trades[0]
-    symbol = t["symbol"]
-    trend = t["trend"]
-    direction = "Long" if trend == "bull" else "Short"
-    direction_icon = "🟢" if trend == "bull" else "🔴"
-
-    ep = t["entry"]["entry_price"]
-    sl = t["sl"]
-    tp = t["tp"]
-    rr = t["rr"]
-    success = t["success"]
-    reason = t["entry"]["reason"]
-
-    # تحديد فوري أو معلّق حسب 1%
-    last_price = t["last_price"]
-    diff = abs(last_price - ep) / ep * 100
-    is_pending = diff > 0.1 and diff <= 1
-
-    if is_pending:
-        return f"""
-⏰ فحص تلقائي — فرصة جديدة (معلق)
-
-🎯 {symbol} — {direction_icon} {direction}
-Entry: {fmt_price(ep)}
-SL: {fmt_price(sl)}
-TP: {fmt_price(tp)}
-R:R = 1:{rr:.2f}
-نسبة النجاح المتوقعة: {success:.0f}%
-
-📌 السبب: شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق
-سيتم التأكيد عند الوصول إلى هدف الدخول.
-""".strip()
-
-    else:
-        return f"""
-⏰ فحص تلقائي — فرصة جديدة (فوري)
-
-🎯 {symbol} — {direction_icon} {direction}
-Entry: {fmt_price(ep)}
-SL: {fmt_price(sl)}
-TP: {fmt_price(tp)}
-R:R = 1:{rr:.2f}
-نسبة النجاح المتوقعة: {success:.0f}%
-
-📌 السبب: شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق
-""".strip()
+    📌 السبب: {reason}
+    """.strip()
+    return msg
 
 # ================== الفحص التلقائي ==================
-def auto_scan_loop():
-    global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
+        def auto_scan_loop():
+            global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
 
-    while True:
-        try:
-            if LAST_CHAT_ID:
-                trades = find_best_trades(top_20_liquid_coins())
+            while True:
+                try:
+                    if LAST_CHAT_ID:
+                        trades = find_best_trades(top_20_liquid_coins())
 
-                if trades:
-                    now = time.time()
-                    filtered = []
+                        if trades:
+                            now = time.time()
+                            filtered = []
 
-                    for t in trades:
-                        sig = make_signature(t)
+                            for t in trades:
+                                sig = make_signature(t)
 
-                        with lock:
-                            if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
-                                continue
+                                with lock:
+                                    if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
+                                        continue
 
-                            LAST_TRADE_SIGNATURE[sig] = now
+                                    LAST_TRADE_SIGNATURE[sig] = now
 
-                        filtered.append(t)
+                                filtered.append(t)
 
-                    if filtered:
-                        msg = build_auto_scan_message(filtered)
-                        if msg and can_send("auto_scan_msg"):
-                            bot.send_message(LAST_CHAT_ID, msg)
+                            if filtered:
+                                msg = build_auto_scan_message(filtered)
+                                if msg and can_send("auto_scan_msg"):
+                                    bot.send_message(LAST_CHAT_ID, msg)
 
-                        # تأكيد دخول للصفقات المعلقة عند وصول السعر
-                        for t in filtered:
-                            if "pending_entry" in t and "last_price" in t:
-                                pe = t["pending_entry"]["entry_price"]
-                                lp = t["last_price"]
-                                if t["trend"] == "bull" and lp <= pe:
-                                    if can_send(f"pending_confirm_{t['symbol']}"):
-                                        bot.send_message(
-                                            LAST_CHAT_ID,
-                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
-                                        )
-                                if t["trend"] == "bear" and lp >= pe:
-                                    if can_send(f"pending_confirm_{t['symbol']}"):
-                                        bot.send_message(
-                                            LAST_CHAT_ID,
-                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
-                                        )
+                                # 🔔 تذكير عند وصول السعر لمنطقة الدخول للصفقات المعلقة
+                                for t in filtered:
+                                    if t["type"] == "معلق":
+                                        ep = t["entry_price"]
+                                        lp = t["last_price"]
 
-        except Exception as e:
-            print("Auto scan error:", e)
+                                        if t["trend"] == "bull" and lp <= ep:
+                                            if can_send(f"pending_reach_{t['symbol']}"):
+                                                bot.send_message(
+                                                    LAST_CHAT_ID,
+                                                    f"🔔 تذكير: السعر الآن في منطقة الدخول المقترحة لعملة {t['symbol']} عند {fmt_price(ep)}"
+                                                )
 
-        time.sleep(600)
+                                        if t["trend"] == "bear" and lp >= ep:
+                                            if can_send(f"pending_reach_{t['symbol']}"):
+                                                bot.send_message(
+                                                    LAST_CHAT_ID,
+                                                    f"🔔 تذكير: السعر الآن في منطقة الدخول المقترحة لعملة {t['symbol']} عند {fmt_price(ep)}"
+                                                )
+
+                except Exception as e:
+                    print("Auto scan error:", e)
+
+                time.sleep(600)
 
 # ================== الهاندلرز ==================
 @bot.message_handler(commands=['start'])
