@@ -790,7 +790,35 @@ def build_analysis_message():
 
     return msg
 
-# ================== رسالة الصفقات اليدوية ==================
+# ================== دوال تنسيق الصفقات الجديدة ==================
+def format_instant_trade(symbol, direction_icon, entry, sl, tp, rr, success, reason):
+    return f"""
+{symbol} — {direction_icon} (فوري)
+
+Entry: {fmt_price(entry)}
+SL: {fmt_price(sl)}
+TP: {fmt_price(tp)}
+R:R = 1:{rr:.2f}
+نسبة النجاح المتوقعة: {success:.0f}%
+
+📌 السبب: {reason}
+""".strip()
+
+def format_pending_trade(symbol, direction_icon, entry, sl, tp, rr, success, reason):
+    return f"""
+{symbol} — {direction_icon} (معلق)
+
+Entry: {fmt_price(entry)}
+SL: {fmt_price(sl)}
+TP: {fmt_price(tp)}
+R:R = 1:{rr:.2f}
+نسبة النجاح المتوقعة: {success:.0f}%
+
+📌 السبب: {reason}
+سيتم إرسال رسالة تأكيد دخول عند وصول السعر إلى منطقة الدخول.
+""".strip()
+
+# ================== رسالة الصفقات اليدوية (إصدار جديد) ==================
 def build_trades_message(trades=None):
     if trades is None:
         trades = find_best_trades(top_20_liquid_coins())
@@ -801,71 +829,94 @@ def build_trades_message(trades=None):
     msg = ""
 
     for i, t in enumerate(trades, 1):
+        symbol = t["symbol"]
+        trend = t["trend"]
+        direction_icon = "🟢" if trend == "bull" else "🔴"
+
+        # الفوري
         ep = t["entry"]["entry_price"]
-        sl = t["sl"]; tp = t["tp"]
+        sl = t["sl"]
+        tp = t["tp"]
         rr = t["rr"]
         success = t["success"]
-        direction_icon = "🟢" if t["trend"]=="bull" else "🔴"
-
-        rank_icon = "🥇" if i == 1 else "🥈"
-
-        # الصفقة الفورية
-        msg += f"{rank_icon} {t['symbol']} — {direction_icon} ({t['entry']['entry_type']})\n\n"
-        msg += f"Entry: {fmt_price(ep)}\n"
-        msg += f"SL: {fmt_price(sl)}\n"
-        msg += f"TP: {fmt_price(tp)}\n"
-        msg += f"R:R = 1:{rr:.2f}\n"
-        msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
-
         reason = t["entry"]["reason"]
-        extra_reason = "توافق الإطارات الزمنية 1D+4H+1H"
-        if t.get("has_fvg_1h"):
-            extra_reason += " + وجود FVG على 1H"
-        msg += f"📌 السبب: {extra_reason} + {reason}\n\n"
 
-        # خط أفقي يفصل بين الصفقتين اليدويتين
+        trade_text = format_instant_trade(
+            symbol, direction_icon, ep, sl, tp, rr, success,
+            f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
+        )
+
+        msg += "🥇 " if i == 1 else "🥈 "
+        msg += trade_text + "\n\n"
+
+        # المعلّق (إن وجد)
         if "pending_entry" in t:
-            msg += "────────────\n\n"
             p = t["pending_entry"]["entry_price"]
-            msg += f"📌 صفقة معلقة (انحراف 1%) — ({t['pending_entry']['entry_type']})\n\n"
-            msg += f"Entry: {fmt_price(p)}\n"
-            msg += f"SL: {fmt_price(sl)}\n"
-            msg += f"TP: {fmt_price(tp)}\n"
-            msg += f"R:R (تقريبي) = 1:{rr:.2f}\n"
-            msg += f"📩 عند وصول السعر لهذه المنطقة ستظهر رسالة تأكيد دخول.\n\n"
+            pending_reason = t["pending_entry"]["reason"]
+
+            pending_text = format_pending_trade(
+                symbol, direction_icon, p, sl, tp, rr, success,
+                f"توافق الإطارات الزمنية 1D+4H+1H + {pending_reason}"
+            )
+
+            msg += pending_text + "\n\n"
 
         if i != len(trades):
             msg += "==============================\n\n"
 
-    return msg
+    return msg.strip()
 
-# ================== رسالة الفحص التلقائي ==================
+# ================== رسالة الفحص التلقائي (إصدار جديد) ==================
 def build_auto_scan_message(trades):
     if not trades:
         return None
 
     t = trades[0]
+    symbol = t["symbol"]
+    trend = t["trend"]
+    direction = "Long" if trend == "bull" else "Short"
+    direction_icon = "🟢" if trend == "bull" else "🔴"
+
     ep = t["entry"]["entry_price"]
-    sl = t["sl"]; tp = t["tp"]
+    sl = t["sl"]
+    tp = t["tp"]
     rr = t["rr"]
     success = t["success"]
-    direction = "Long" if t["trend"]=="bull" else "Short"
-
-    msg = "⏰ فحص تلقائي — فرصة جديدة\n\n"
-    msg += f"🎯 {t['symbol']} — {direction} (فوري)\n"
-    msg += f"Entry: {fmt_price(ep)}\n"
-    msg += f"SL: {fmt_price(sl)}\n"
-    msg += f"TP: {fmt_price(tp)}\n"
-    msg += f"R:R = 1:{rr:.2f}\n"
-    msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
-
     reason = t["entry"]["reason"]
-    extra_reason = "شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق"
-    if t.get("has_fvg_1h"):
-        extra_reason += " + FVG على 1H"
-    msg += f"📌 السبب: {extra_reason}\n"
 
-    return msg
+    # تحديد فوري أو معلّق حسب 1%
+    last_price = t["last_price"]
+    diff = abs(last_price - ep) / ep * 100
+    is_pending = diff > 0.1 and diff <= 1
+
+    if is_pending:
+        return f"""
+⏰ فحص تلقائي — فرصة جديدة (معلق)
+
+🎯 {symbol} — {direction_icon} {direction}
+Entry: {fmt_price(ep)}
+SL: {fmt_price(sl)}
+TP: {fmt_price(tp)}
+R:R = 1:{rr:.2f}
+نسبة النجاح المتوقعة: {success:.0f}%
+
+📌 السبب: شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق
+سيتم التأكيد عند الوصول إلى هدف الدخول.
+""".strip()
+
+    else:
+        return f"""
+⏰ فحص تلقائي — فرصة جديدة (فوري)
+
+🎯 {symbol} — {direction_icon} {direction}
+Entry: {fmt_price(ep)}
+SL: {fmt_price(sl)}
+TP: {fmt_price(tp)}
+R:R = 1:{rr:.2f}
+نسبة النجاح المتوقعة: {success:.0f}%
+
+📌 السبب: شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق
+""".strip()
 
 # ================== الفحص التلقائي ==================
 def auto_scan_loop():
