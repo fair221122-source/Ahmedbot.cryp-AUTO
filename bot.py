@@ -8,529 +8,529 @@ import pandas as pd
 import numpy as np
 import telebot
 from telebot import types
-
-    # جلسة اتصال ثابتة مع Binance ولباقي الطلبات
 session = requests.Session()
 
-    # ================== منع تكرار الإرسال ==================
+# ================== منع تكرار الإرسال ==================
 LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
 LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
 lock = threading.Lock()
 
-
 def can_send(key):
-        now = time.time()
-        if key in LAST_SENT:
-            if now - LAST_SENT[key] < 1800:  # نصف ساعة
-                return False
-        LAST_SENT[key] = now
-        return True
-
+    now = time.time()
+    if key in LAST_SENT:
+        if now - LAST_SENT[key] < 1800:  # نصف ساعة
+            return False
+    LAST_SENT[key] = now
+    return True
 
 def make_signature(t):
-        # التوقيع يعتمد على بيانات الصفقة النهائية
-        return f"{t['symbol']}-{t['trend']}-{t['entry_price']:.4f}-{t['sl']:.4f}-{t['tp']:.4f}"
+    return f"{t['symbol']}-{t['trend']}-{t['entry']['entry_price']:.4f}-{t['sl']:.4f}-{t['tp']:.4f}"
 
-
-    # ================== Flask ==================
+# ================== Flask ==================
 app = Flask(__name__)
-
 
 @app.route("/")
 def home():
-        return "Bot is running"
+    return "Bot is running"
 
-
-    # ================== إعداد اللوج ==================
+# ================== إعداد اللوج ==================
 logging.basicConfig(level=logging.CRITICAL)
 
-    # ================== البوت ==================
+# ================== البوت ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 LAST_CHAT_ID = None
 
-
-    # ================== قائمة العملات ==================
+# ================== قائمة العملات ==================
 def top_20_liquid_coins():
-        return [
-            "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-            "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-            "MATICUSDT", "NEARUSDT", "TRXUSDT", "LTCUSDT", "UNIUSDT",
-            "ARBUSDT", "OPUSDT", "SUIUSDT", "FILUSDT", "STXUSDT"
-        ]
+    return [
+        "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+        "ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
+        "MATICUSDT","NEARUSDT","TRXUSDT","LTCUSDT","UNIUSDT",
+        "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
+    ]
 
-
-    # ================== جلب الأخبار (CryptoPanic API) ==================
+# ================== جلب الأخبار (CryptoPanic API) ==================
 def fetch_crypto_news():
-        try:
-            url = "https://cryptopanic.com/api/v1/posts/?auth_token=&public=true"
-            r = requests.get(url, timeout=10)
-            data = r.json()
+    try:
+        url = "https://cryptopanic.com/api/v1/posts/?auth_token=&public=true"
+        r = requests.get(url, timeout=10)
+        data = r.json()
 
-            if "results" not in data:
-                return []
-
-            news_list = []
-            for item in data["results"][:5]:  # آخر 5 أخبار فقط
-                title = item.get("title", "")
-                link = item.get("url", "")
-                news_list.append({"title": title, "url": link})
-
-            return news_list
-
-        except Exception as e:
-            print(f"[NEWS ERROR] فشل في جلب الأخبار: {e}")
+        if "results" not in data:
             return []
 
+        news_list = []
+        for item in data["results"][:5]:  # آخر 5 أخبار فقط
+            title = item.get("title", "")
+            link = item.get("url", "")
+            news_list.append({"title": title, "url": link})
 
-    # ================== المؤشرات الفنية (RSI) ==================
+        return news_list
+
+    except Exception as e:
+        print(f"[NEWS ERROR] فشل في جلب الأخبار: {e}")
+        return []
+
+# ================== المؤشرات الفنية (RSI) ==================
 def calc_rsi(df, period=14):
-        delta = df["c"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
+    delta = df["c"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-        avg_gain = gain.rolling(period).mean()
-        avg_loss = loss.rolling(period).mean()
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
 
-        return rsi
-
+    return rsi
 
 def rsi_filter(df, side):
-        rsi = calc_rsi(df).iloc[-1]
+    rsi = calc_rsi(df).iloc[-1]
 
-        if side == "LONG" and rsi > 70:
-            return False  # تشبع شرائي
-        if side == "SHORT" and rsi < 30:
-            return False  # تشبع بيعي
+    if side == "LONG" and rsi > 70:
+        return False  # تشبع شرائي
+    if side == "SHORT" and rsi < 30:
+        return False  # تشبع بيعي
 
-        return True
-
+    return True
 
 def data_ok(df, min_len=80):
-        """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
-        return df is not None and len(df) >= min_len
-
+    """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
+    return df is not None and len(df) >= min_len
 
 def fetch_funding_rate(symbol):
-        """جلب رسوم التمويل من Binance API"""
-        try:
-            url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-            r = requests.get(url, params={"symbol": symbol}, timeout=10)
-            return float(r.json().get("lastFundingRate", 0))
-        except Exception:
-            return 0
+    """جلب رسوم التمويل من Binance API"""
+    try:
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+        r = requests.get(url, params={"symbol": symbol}, timeout=10)
+        return float(r.json().get("lastFundingRate", 0))
+    except:
+        return 0
 
+# ================== جلب البيانات ==================
+# جلسة اتصال ثابتة مع Binance
+session = requests.Session()
 
-    # ================== جلب البيانات ==================
 def fetch_klines(symbol, interval="1h", limit=200):
-        urls = [
-            "https://fapi.binance.com/fapi/v1/klines",
-            "https://fapi1.binance.com/fapi/v1/klines",
-            "https://fapi2.binance.com/fapi/v1/klines"
-        ]
+    urls = [
+        "https://fapi.binance.com/fapi/v1/klines",
+        "https://fapi1.binance.com/fapi/v1/klines",
+        "https://fapi2.binance.com/fapi/v1/klines"
+    ]
 
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
 
-        for url in urls:
-            for attempt in range(3):  # إعادة المحاولة 3 مرات
-                try:
-                    r = session.get(url, params=params, timeout=10)
-                    data = r.json()
+    for url in urls:
+        for attempt in range(3):  # إعادة المحاولة 3 مرات
+            try:
+                r = session.get(url, params=params, timeout=10)
+                data = r.json()
 
-                    # خطأ من Binance API
-                    if isinstance(data, dict) and data.get("code"):
-                        print(f"[API ERROR] Binance error for {symbol} {interval}: {data}")
-                        time.sleep(0.3)
-                        continue
-
-                    # تحويل البيانات إلى DataFrame
-                    df = pd.DataFrame(data, columns=[
-                        "t", "o", "h", "l", "c", "v", "ct", "qv", "n", "tbb", "tbq", "i"
-                    ])
-                    df[["o", "h", "l", "c", "v"]] = df[["o", "h", "l", "c", "v"]].astype(float)
-
-                    return df[["o", "h", "l", "c", "v"]]
-
-                except Exception as e:
-                    print(f"[API ERROR] محاولة {attempt+1} لجلب {symbol} — {interval} فشلت: {e}")
+                # خطأ من Binance API
+                if isinstance(data, dict) and data.get("code"):
+                    print(f"[API ERROR] Binance error for {symbol} {interval}: {data}")
                     time.sleep(0.3)
                     continue
 
-        return None
+                # تحويل البيانات إلى DataFrame
+                df = pd.DataFrame(data, columns=[
+                    "t","o","h","l","c","v","ct","qv","n","tbb","tbq","i"
+                ])
+                df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
 
+                return df[["o","h","l","c","v"]]
 
-    # ================== أدوات التحليل ==================
+            except Exception as e:
+                print(f"[API ERROR] محاولة {attempt+1} لجلب {symbol} — {interval} فشلت: {e}")
+                time.sleep(0.3)
+                continue
+
+    return None
+
+# ================== أدوات التحليل ==================
 def calc_candle_features(df):
-        o = df["o"]
-        h = df["h"]
-        l = df["l"]
-        c = df["c"]
-        body = (c - o).abs()
-        upper = h - np.maximum(o, c)
-        lower = np.minimum(o, c) - l
-        return body, upper, lower
-
+    o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
+    body = (c - o).abs()
+    upper = h - np.maximum(o, c)
+    lower = np.minimum(o, c) - l
+    return body, upper, lower
 
 def detect_trend(df, lookback=50):
-        df = df.iloc[-lookback:]
-        highs = df["h"]
-        lows = df["l"]
+    df = df.iloc[-lookback:]
+    highs = df["h"]; lows = df["l"]
 
-        if highs.iloc[-1] > highs.mean() and lows.iloc[-1] > lows.mean():
-            trend = "bull"
-        elif highs.iloc[-1] < highs.mean() and lows.iloc[-1] < lows.mean():
-            trend = "bear"
-        else:
-            trend = "side"
+    if highs.iloc[-1] > highs.mean() and lows.iloc[-1] > lows.mean():
+        trend = "bull"
+    elif highs.iloc[-1] < highs.mean() and lows.iloc[-1] < lows.mean():
+        trend = "bear"
+    else:
+        trend = "side"
 
-        last5 = df.iloc[-5:]
-        body, _, _ = calc_candle_features(last5)
-        momentum = "strong" if body.mean() > (df["c"] - df["o"]).abs().mean() else "weak"
+    last5 = df.iloc[-5:]
+    body, _, _ = calc_candle_features(last5)
+    momentum = "strong" if body.mean() > (df["c"] - df["o"]).abs().mean() else "weak"
 
-        desc = ("اتجاه صاعد" if trend == "bull" else "اتجاه هابط" if trend == "bear" else "اتجاه جانبي")
-        desc += " + زخم قوي" if momentum == "strong" else " + زخم ضعيف"
+    desc = ("اتجاه صاعد" if trend=="bull" else "اتجاه هابط" if trend=="bear" else "اتجاه جانبي")
+    desc += " + زخم قوي" if momentum=="strong" else " + زخم ضعيف"
 
-        return trend, momentum, desc
-
+    return trend, momentum, desc
 
 def calc_percent_metrics(df):
-        close_last = df["c"].iloc[-1]
-        close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
-        change_24 = (close_last - close_24) / close_24 * 100 if close_24 else 0
+    close_last = df["c"].iloc[-1]
+    close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
+    change_24 = (close_last - close_24) / close_24 * 100 if close_24 else 0
 
-        close_prev = df["c"].iloc[-2] if len(df) >= 2 else df["c"].iloc[0]
-        change_1h = (close_last - close_prev) / close_prev * 100 if close_prev else 0
+    close_prev = df["c"].iloc[-2] if len(df) >= 2 else df["c"].iloc[0]
+    change_1h = (close_last - close_prev) / close_prev * 100 if close_prev else 0
 
-        low = df["l"].min()
-        high = df["h"].max()
-        pos = (close_last - low) / (high - low) * 100 if high != low else 50
+    low = df["l"].min(); high = df["h"].max()
+    pos = (close_last - low) / (high - low) * 100 if high != low else 50
 
-        return change_1h, change_24, pos
-
+    return change_1h, change_24, pos
 
 def calc_atr(df, period=14):
-        high = df["h"]
-        low = df["l"]
-        close = df["c"]
-        prev_close = close.shift(1)
-        tr1 = high - low
-        tr2 = (high - prev_close).abs()
-        tr3 = (low - prev_close).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
-
+    high = df["h"]; low = df["l"]; close = df["c"]
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
 
 def avg_volume(df, period=50):
-        if df is None or len(df) < period:
-            return None
-        return df["v"].iloc[-period:].mean()
+    if df is None or len(df) < period:
+        return None
+    return df["v"].iloc[-period:].mean()
 
-
-    # FVG مبسط على فريم الساعة
+# FVG مبسط على فريم الساعة
 def detect_fvg_1h(df):
-        # نموذج 3 شموع: الشمعة 1 – 2 – 3
-        if len(df) < 3:
-            return False
-
-        h1 = df["h"].iloc[-3]
-        l1 = df["l"].iloc[-3]
-        h2 = df["h"].iloc[-2]
-        l2 = df["l"].iloc[-2]
-        h3 = df["h"].iloc[-1]
-        l3 = df["l"].iloc[-1]
-
-        # FVG صاعد
-        bullish_fvg = l3 > h1 and l2 > h1
-
-        # FVG هابط
-        bearish_fvg = h3 < l1 and h2 < l1
-
-        return bullish_fvg or bearish_fvg
-
-    # ================== فلاتر إضافية متقدمة (FVG + OB + Liquidity) ==================
-def check_fvg_risk(df, entry_price, trend):
-        if len(df) < 10:
-            return False
-
-        last3 = df.iloc[-3:]
-        h1, l1 = last3["h"].iloc[0], last3["l"].iloc[0]
-        h3, l3 = last3["h"].iloc[2], last3["l"].iloc[2]
-
-        if trend == "bull":
-            if l3 < entry_price < h1:
-                return True
-
-        if trend == "bear":
-            if l1 < entry_price < h3:
-                return True
-
+    # نموذج 3 شموع: الشمعة 1 – 2 – 3
+    if len(df) < 3:
         return False
 
+    h1 = df["h"].iloc[-3]
+    l1 = df["l"].iloc[-3]
+    h2 = df["h"].iloc[-2]
+    l2 = df["l"].iloc[-2]
+    h3 = df["h"].iloc[-1]
+    l3 = df["l"].iloc[-1]
+
+    # FVG صاعد
+    bullish_fvg = l3 > h1 and l2 > h1
+
+    # FVG هابط
+    bearish_fvg = h3 < l1 and h2 < l1
+
+    return bullish_fvg or bearish_fvg
+
+# ================== فلاتر إضافية متقدمة (FVG + OB + Liquidity) ==================
+def check_fvg_risk(df, entry_price, trend):
+    """
+    يتحقق إذا كان هناك FVG قريب قد يرجّع السعر ويضرب الستوب.
+    فلتر متوسط القوة.
+    """
+    if len(df) < 10:
+        return False
+
+    last3 = df.iloc[-3:]
+    h1, l1 = last3["h"].iloc[0], last3["l"].iloc[0]
+    h3, l3 = last3["h"].iloc[2], last3["l"].iloc[2]
+
+    if trend == "bull":
+        # إذا كان الدخول داخل منطقة فجوة محتملة تحت السعر
+        if l3 < entry_price < h1:
+            return True
+
+    if trend == "bear":
+        # إذا كان الدخول داخل منطقة فجوة محتملة فوق السعر
+        if l1 < entry_price < h3:
+            return True
+
+    return False
 
 def check_order_block(df, entry_price, trend):
-        if len(df) < 20:
-            return False
-
-        last20 = df.iloc[-20:]
-        rng = last20["h"].max() - last20["l"].min()
-        if rng == 0:
-            return False
-
-        threshold = rng * 0.12
-
-        if trend == "bull":
-            ob_low = last20["l"].min()
-            if abs(entry_price - ob_low) <= threshold:
-                return True
-
-        if trend == "bear":
-            ob_high = last20["h"].max()
-            if abs(entry_price - ob_high) <= threshold:
-                return True
-
+    """
+    يتحقق إذا كان الدخول قريب من Order Block قوي.
+    فلتر أقوى قليلاً، يركز على آخر 20 شمعة.
+    """
+    if len(df) < 20:
         return False
 
+    last20 = df.iloc[-20:]
+    rng = last20["h"].max() - last20["l"].min()
+    if rng == 0:
+        return False
+
+    threshold = rng * 0.12  # مسافة قريبة نسبيًا
+
+    if trend == "bull":
+        ob_low = last20["l"].min()
+        if abs(entry_price - ob_low) <= threshold:
+            return True
+
+    if trend == "bear":
+        ob_high = last20["h"].max()
+        if abs(entry_price - ob_high) <= threshold:
+            return True
+
+    return False
 
 def check_liquidity_cluster(df, entry_price):
-        if len(df) < 30:
-            return False
-
-        last30 = df.iloc[-30:]
-        cluster_low = last30["l"].mean()
-        cluster_high = last30["h"].mean()
-
-        if cluster_low <= entry_price <= cluster_high:
-            return True
-
+    """
+    يتحقق إذا كان الدخول قريب من منطقة سيولة مزدحمة (كلاستر).
+    فلتر متوسط، يمنع الدخول في قلب الكلاستر.
+    """
+    if len(df) < 30:
         return False
 
+    last30 = df.iloc[-30:]
+    cluster_low = last30["l"].mean()
+    cluster_high = last30["h"].mean()
+
+    # إذا كان الدخول داخل نطاق الكلاستر المتوسط
+    if cluster_low <= entry_price <= cluster_high:
+        return True
+
+    return False
 
 def extra_filters(df15, entry_price, trend):
-        if check_fvg_risk(df15, entry_price, trend):
-            return True
+    """
+    يجمع كل الفلاتر الإضافية.
+    يرجع True إذا الصفقة خطيرة ويجب رفضها.
+    """
+    # خطر FVG قريب
+    if check_fvg_risk(df15, entry_price, trend):
+        return True
 
-        if check_order_block(df15, entry_price, trend):
-            return True
+    # خطر Order Block قريب
+    if check_order_block(df15, entry_price, trend):
+        return True
 
-        if check_liquidity_cluster(df15, entry_price):
-            return True
+    # خطر Liquidity Cluster
+    if check_liquidity_cluster(df15, entry_price):
+        return True
 
-        return False
+    return False
 
-
-    # ================== تحليل 1D ==================
+# ================== تحليل 1D ==================
 def analyze_symbol_1d(symbol):
-        df = fetch_klines(symbol, "1d", 200)
-        if not data_ok(df, 120):
-            return None
-
-        trend, momentum, desc = detect_trend(df)
-        ch1, ch24, pos = calc_percent_metrics(df)
-        atr = calc_atr(df, period=14)
-
-        zone = "neutral"
-        if pos > 70:
-            zone = "premium"
-        elif pos < 30:
-            zone = "discount"
-
-        return {
-            "trend_1d": trend,
-            "momentum_1d": momentum,
-            "desc_1d": desc,
-            "pos_1d": pos,
-            "zone_1d": zone,
-            "atr_1d": atr
-        }
-
-
-    # ================== تحليل 1h ==================
-def analyze_symbol_1h(symbol):
-        df = fetch_klines(symbol, "1h", 200)
-        if not data_ok(df, 120):
-            return None
-
-        trend, momentum, desc = detect_trend(df)
-        ch1, ch24, pos = calc_percent_metrics(df)
-        atr = calc_atr(df, period=14)
-        fvg = detect_fvg_1h(df)
-        vol_avg = avg_volume(df, 50)
-        vol_last = df["v"].iloc[-1]
-        funding = fetch_funding_rate(symbol)
-
-        return {
-            "symbol": symbol,
-            "trend": trend,
-            "momentum": momentum,
-            "description": desc,
-            "last_price": df["c"].iloc[-1],
-            "change_1h": ch1,
-            "change_24h": ch24,
-            "pos_range": pos,
-            "atr_1h": atr,
-            "has_fvg": fvg,
-            "funding": funding,
-            "vol_avg": vol_avg,
-            "vol_last": vol_last
-        }
-
-
-    # ================== تحليل 4h ==================
-def analyze_symbol_4h(symbol):
-        df = fetch_klines(symbol, "4h", 200)
-        if not data_ok(df, 80):
-            return None
-
-        trend, momentum, desc = detect_trend(df)
-
-        return {
-            "trend_4h": trend,
-            "momentum_4h": momentum,
-            "desc_4h": desc
-        }
-
-
-    # ================== دخول 15m ==================
-def detect_entry_15m(df, trend):
-        last = df.iloc[-5:]
-        body, upper, lower = calc_candle_features(last)
-
-        vol_avg = avg_volume(df, 50)
-        if vol_avg is None:
-            return None
-
-        for i in range(4, -1, -1):
-
-            if (
-                trend == "bull"
-                and lower.iloc[i] > body.iloc[i] * 1.5
-                and last["c"].iloc[i] > last["o"].iloc[i]
-                and last["v"].iloc[i] > vol_avg * 0.7
-            ):
-                return {
-                    "type": "long",
-                    "entry_type": "فوري",
-                    "entry_price": last["c"].iloc[i],
-                    "reason": "شمعة رفض هبوط على 15m"
-                }
-
-            if (
-                trend == "bear"
-                and upper.iloc[i] > body.iloc[i] * 1.5
-                and last["c"].iloc[i] < last["o"].iloc[i]
-                and last["v"].iloc[i] > vol_avg * 0.7
-            ):
-                return {
-                    "type": "short",
-                    "entry_type": "فوري",
-                    "entry_price": last["c"].iloc[i],
-                    "reason": "شمعة رفض صعود على 15m"
-                }
-
+    df = fetch_klines(symbol, "1d", 200)
+    if not data_ok(df, 120):
         return None
 
+    trend, momentum, desc = detect_trend(df)
+    ch1, ch24, pos = calc_percent_metrics(df)
+    atr = calc_atr(df, period=14)
 
-    # ================== تنسيق ==================
+    # تقدير Premium / Discount من موقع السعر داخل الرينج اليومي
+    zone = "neutral"
+    if pos > 70:
+        zone = "premium"
+    elif pos < 30:
+        zone = "discount"
+
+    return {
+        "trend_1d": trend,
+        "momentum_1d": momentum,
+        "desc_1d": desc,
+        "pos_1d": pos,
+        "zone_1d": zone,
+        "atr_1d": atr
+    }
+
+# ================== تحليل 1h ==================
+def analyze_symbol_1h(symbol):
+    df = fetch_klines(symbol, "1h", 200)
+    if not data_ok(df, 120):
+        return None
+
+    trend, momentum, desc = detect_trend(df)
+    ch1, ch24, pos = calc_percent_metrics(df)
+    atr = calc_atr(df, period=14)
+    fvg = detect_fvg_1h(df)
+    vol_avg = avg_volume(df, 50)
+    vol_last = df["v"].iloc[-1]
+    funding = fetch_funding_rate(symbol)
+
+    return {
+        "symbol": symbol,
+        "trend": trend,
+        "momentum": momentum,
+        "description": desc,
+        "last_price": df["c"].iloc[-1],
+        "change_1h": ch1,
+        "change_24h": ch24,
+        "pos_range": pos,
+        "atr_1h": atr,
+        "has_fvg": fvg,
+        "funding": funding,
+        "vol_avg": vol_avg,
+        "vol_last": vol_last
+    }
+
+# ================== تحليل 4h ==================
+def analyze_symbol_4h(symbol):
+    df = fetch_klines(symbol, "4h", 200)
+    if not data_ok(df, 80):
+        return None
+
+    trend, momentum, desc = detect_trend(df)
+
+    return {
+        "trend_4h": trend,
+        "momentum_4h": momentum,
+        "desc_4h": desc
+    }
+
+# ================== دخول 15m ==================
+def detect_entry_15m(df, trend):
+    last = df.iloc[-5:]
+    body, upper, lower = calc_candle_features(last)
+
+    vol_avg = avg_volume(df, 50)
+    if vol_avg is None:
+        return None
+
+    for i in range(4, -1, -1):
+
+        # دخول شراء (bullish)
+        if (
+            trend == "bull"
+            and lower.iloc[i] > body.iloc[i] * 1.5
+            and last["c"].iloc[i] > last["o"].iloc[i]
+            and last["v"].iloc[i] > vol_avg * 0.7
+        ):
+            return {
+                "type": "long",
+                "entry_type": "فوري",
+                "entry_price": last["c"].iloc[i],
+                "reason": "شمعة رفض هبوط على 15m"
+            }
+
+        # دخول بيع (bearish)
+        if (
+            trend == "bear"
+            and upper.iloc[i] > body.iloc[i] * 1.5
+            and last["c"].iloc[i] < last["o"].iloc[i]
+            and last["v"].iloc[i] > vol_avg * 0.7
+        ):
+            return {
+                "type": "short",
+                "entry_type": "فوري",
+                "entry_price": last["c"].iloc[i],
+                "reason": "شمعة رفض صعود على 15m"
+            }
+
+    return None
+
+# ================== تنسيق ==================
 def fmt_price(x):
-        return f"{x:.4f}"
-
+    return f"{x:.4f}"
 
 def fmt_pct(x):
-        return f"{x:.2f}%"
+    return f"{x:.2f}%"
 
-
-    # ================== حساب نسبة النجاح ==================
+# ================== حساب نسبة النجاح المتوقعة ==================
 def calc_success_prob(t):
-        score = 0
-        rr = t["rr"]
+    score = 0
 
-        if rr >= 2.5:
-            score += 30
-        if rr >= 3.5:
-            score += 10
-        if rr >= 5:
-            score += 10
-        if rr >= 7:
-            score += 5
+    rr = t["rr"]
 
-        if t["trend_1d"] == t["trend_4h"] == t["trend"]:
-            score += 25
-        elif t["trend_1d"] == t["trend_4h"] or t["trend_1d"] == t["trend"]:
-            score += 15
+    # R:R
+    if rr >= 2.5:
+        score += 30
+    if rr >= 3.5:
+        score += 10
+    if rr >= 5:
+        score += 10
+    if rr >= 7:
+        score += 5
 
-        if t["momentum"] == "strong":
-            score += 10
-        if t["momentum_4h"] == "strong":
-            score += 10
-        if t["momentum_1d"] == "strong":
-            score += 10
+    # توافق الاتجاه بين 1D و 4H و 1H
+    if t["trend_1d"] == t["trend_4h"] == t["trend"]:
+        score += 25
+    elif t["trend_1d"] == t["trend_4h"] or t["trend_1d"] == t["trend"]:
+        score += 15
 
-        pos = t["pos_range"]
-        if 30 <= pos <= 70:
-            score += 10
-        elif 20 <= pos < 30 or 70 < pos <= 80:
-            score += 5
+    # الزخم
+    if t["momentum"] == "strong":
+        score += 10
+    if t["momentum_4h"] == "strong":
+        score += 10
+    if t["momentum_1d"] == "strong":
+        score += 10
 
-        # ← هنا كان الخطأ الوحيد
-        if t.get("has_fvg"):
-            score += 5
+    # موقع السعر داخل الرينج
+    pos = t["pos_range"]
+    if 30 <= pos <= 70:
+        score += 10
+    elif 20 <= pos < 30 or 70 < pos <= 80:
+        score += 5
 
-        if t["trend_1d"] == "bull" and t["zone_1d"] == "discount":
-            score += 10
-        if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
-            score += 10
+    # FVG على الساعة
+    if t.get("has_fvg_1h"):
+        score += 5
 
-        if "funding" in t:
-            f = t["funding"]
-            if t["trend"] == "bull" and f < -0.0005:
-                score -= 10
-            if t["trend"] == "bear" and f > 0.0005:
-                score -= 10
+    # Premium / Discount من اليومي
+    if t["trend_1d"] == "bull" and t["zone_1d"] == "discount":
+        score += 10
+    if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
+        score += 10
 
-        if "vol_avg" in t and "vol_last" in t:
-            if t["vol_last"] < t["vol_avg"] * 0.6:
-                score -= 10
+    # تأثير الـ Funding Rate
+    if "funding" in t:
+        f = t["funding"]
+        if t["trend"] == "bull" and f < -0.0005:
+            score -= 10
+        if t["trend"] == "bear" and f > 0.0005:
+            score -= 10
 
-        score = max(50, min(95, score))
-        return score
+    # تأثير الحجم
+    if "vol_avg" in t and "vol_last" in t:
+        if t["vol_last"] < t["vol_avg"] * 0.6:
+            score -= 10
 
+    # ضبط النتيجة بين 50 و 95
+    score = max(50, min(95, score))
+    return score
 
-    # ================== اختيار R:R ==================
+# ================== اختيار R:R ديناميكي ==================
 def choose_rr(info1, info4, info1d):
-        base = 2.5
-        rr = base
+    base = 2.5
+    rr = base
 
-        if (
-            info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]
-            and info1["momentum"] == "strong"
-            and info4["momentum_4h"] == "strong"
-            and info1d["momentum_1d"] == "strong"
-        ):
-            rr = 5.0
+    # توافق الاتجاه بين 1D و 4H و 1H
+    if (
+        info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]
+        and info1["momentum"] == "strong"
+        and info4["momentum_4h"] == "strong"
+        and info1d["momentum_1d"] == "strong"
+    ):
+        rr = 5.0
 
-        elif info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]:
-            rr = 4.0
+    elif info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]:
+        rr = 4.0
 
-        elif (
-            info1d["trend_1d"] == info4["trend_4h"]
-            or info1d["trend_1d"] == info1["trend"]
-        ):
-            rr = 3.0
+    elif (
+        info1d["trend_1d"] == info4["trend_4h"]
+        or info1d["trend_1d"] == info1["trend"]
+    ):
+        rr = 3.0
 
-        if info1d["trend_1d"] == "bull" and info1["change_24h"] > 5:
-            rr = max(rr, 4.0)
+    # إذا الحركة اليومية قوية في اتجاه الترند
+    if info1d["trend_1d"] == "bull" and info1["change_24h"] > 5:
+        rr = max(rr, 4.0)
 
-        if info1d["trend_1d"] == "bear" and info1["change_24h"] < -5:
-            rr = max(rr, 4.0)
+    if info1d["trend_1d"] == "bear" and info1["change_24h"] < -5:
+        rr = max(rr, 4.0)
 
-        return min(max(rr, 2.5), 7.0)
+    return min(max(rr, 2.5), 7.0)
 
-    # ================== أفضل الصفقات ==================
+# ================== أفضل الصفقات ==================
 def find_best_trades(symbols):
     results = []
 
@@ -564,37 +564,28 @@ def find_best_trades(symbols):
             continue
 
         entry = detect_entry_15m(df15, info1["trend"])
+        if not entry:
+            continue
 
-        # منطق اختيار نوع الصفقة (فوري أو معلق)
-        if entry:
-            final_type = "فوري"
-            final_entry_price = entry["entry_price"]
-            final_reason = entry["reason"]
-            ep = entry["entry_price"]
-        else:
-            final_type = "معلق"
-            if info1["trend"] == "bull":
-                final_entry_price = info1["last_price"] * 0.99
-            else:
-                final_entry_price = info1["last_price"] * 1.01
-            final_reason = "انحراف 1%"
-            ep = final_entry_price
+        ep = entry["entry_price"]
 
-        # فلاتر إضافية متقدمة
+        # فلاتر إضافية متقدمة (FVG + OB + Liquidity)
         if extra_filters(df15, ep, info1["trend"]):
             continue
 
-        # ATR آمن
+        # ATR آمن من فريم الساعة
         atr = info1["atr_1h"]
         if atr is None or atr <= 0:
             continue
 
-        # اختيار R:R
+        # اختيار R:R ديناميكي
         rr = choose_rr(info1, info4, info1d)
         if rr < 2.5:
             continue
 
+        # ============================
         # فلتر RSI
+        # ============================
         df_rsi = fetch_klines(sym, "1h", 200)
         if df_rsi is None or not data_ok(df_rsi):
             continue
@@ -602,14 +593,18 @@ def find_best_trades(symbols):
         side = "LONG" if info1["trend"] == "bull" else "SHORT"
         if not rsi_filter(df_rsi, side):
             continue
+        # ============================
 
-        # فلتر الأخبار
+        # ============================
+        # فلتر الأخبار (الجزء الثالث)
+        # ============================
         news = fetch_crypto_news()
         if news:
             bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
             if len(bad_news) > 0:
                 print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
                 continue
+        # ============================
 
         # حساب SL و TP
         if info1["trend"] == "bull":
@@ -638,19 +633,32 @@ def find_best_trades(symbols):
             "momentum_4h": info4["momentum_4h"],
             "momentum_1d": info1d["momentum_1d"],
             "pos_range": info1["pos_range"],
-            "has_fvg": info1["has_fvg"],
+            "has_fvg_1h": info1["has_fvg"],
             "zone_1d": info1d["zone_1d"],
             "funding": info1["funding"],
             "vol_avg": info1["vol_avg"],
             "vol_last": info1["vol_last"]
         })
 
+        # فلتر نسبة النجاح
         if success < 70:
             continue
 
+        # تخزين نسبة النجاح داخل الصفقة
         t_success = success
 
-        # إضافة الصفقة النهائية
+        # صفقة معلقة بانحراف 1%
+        if info1["trend"] == "bull":
+            pending_price = ep * 0.99  # شراء من أسفل 1%
+        else:
+            pending_price = ep * 1.01  # بيع من أعلى 1%
+
+        pending_entry = {
+            "entry_type": "معلق",
+            "entry_price": pending_price,
+            "reason": entry["reason"] + " (انحراف 1%)"
+        }
+
         results.append({
             "symbol": sym,
             "trend": info1["trend"],
@@ -659,16 +667,15 @@ def find_best_trades(symbols):
             "momentum": info1["momentum"],
             "momentum_4h": info4["momentum_4h"],
             "momentum_1d": info1d["momentum_1d"],
-            "type": final_type,
-            "entry_price": final_entry_price,
-            "reason": final_reason,
+            "entry": entry,                 # دخول فوري
+            "pending_entry": pending_entry, # دخول معلق
             "sl": sl,
             "tp": tp,
             "rr": real_rr,
             "change_1h": info1["change_1h"],
             "change_24h": info1["change_24h"],
             "pos_range": info1["pos_range"],
-            "has_fvg": info1["has_fvg"],
+            "has_fvg_1h": info1["has_fvg"],
             "zone_1d": info1d["zone_1d"],
             "funding": info1["funding"],
             "vol_avg": info1["vol_avg"],
@@ -681,312 +688,285 @@ def find_best_trades(symbols):
 
     results = sorted(results, key=lambda x: x["rr"], reverse=True)
     return results[:2]
-    # ================== تحليل السوق ==================
+
+# ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
-        out = []
-        for sym in symbols:
-            info1d = analyze_symbol_1d(sym)
-            info1 = analyze_symbol_1h(sym)
-            info4 = analyze_symbol_4h(sym)
-
-            if info1d and info1 and info4:
-                score = 0
-                score += abs(info1["change_24h"])
-
-                if info1["momentum"] == "strong":
-                    score += 5
-                if info4["momentum_4h"] == "strong":
-                    score += 5
-                if info1d["momentum_1d"] == "strong":
-                    score += 5
-                if info1["trend"] == info4["trend_4h"] == info1d["trend_1d"]:
-                    score += 15
-
-                info1["score"] = score
-                info1["trend_4h"] = info4["trend_4h"]
-                info1["momentum_4h"] = info4["momentum_4h"]
-                info1["trend_1d"] = info1d["trend_1d"]
-                info1["momentum_1d"] = info1d["momentum_1d"]
-                info1["zone_1d"] = info1d["zone_1d"]
-
-                out.append(info1)
-
-        return sorted(out, key=lambda x: x["score"], reverse=True)[:5]
-
+    out = []
+    for sym in symbols:
+        info1d = analyze_symbol_1d(sym)
+        info1 = analyze_symbol_1h(sym)
+        info4 = analyze_symbol_4h(sym)
+        if info1d and info1 and info4:
+            score = 0
+            score += abs(info1["change_24h"])
+            if info1["momentum"]=="strong":
+                score += 5
+            if info4["momentum_4h"]=="strong":
+                score += 5
+            if info1d["momentum_1d"]=="strong":
+                score += 5
+            if info1["trend"] == info4["trend_4h"] == info1d["trend_1d"]:
+                score += 15
+            info1["score"] = score
+            info1["trend_4h"] = info4["trend_4h"]
+            info1["momentum_4h"] = info4["momentum_4h"]
+            info1["trend_1d"] = info1d["trend_1d"]
+            info1["momentum_1d"] = info1d["momentum_1d"]
+            info1["zone_1d"] = info1d["zone_1d"]
+            out.append(info1)
+    return sorted(out, key=lambda x: x["score"], reverse=True)[:5]
 
 def build_analysis_message():
-        coins = analyze_top_coins(top_20_liquid_coins())
-        if not coins:
-            return "لا يوجد تحليل متاح حالياً."
+    coins = analyze_top_coins(top_20_liquid_coins())
+    if not coins:
+        return "لا يوجد تحليل متاح حالياً."
 
-        msg = "📊 تحليل السوق العام على الإطارات الزمنية التالية:   (1D + 4H + 1H + 15M)\n\n"
+    msg = "📊 تحليل السوق العام على الإطارات الزمنية التالية:   (1D + 4H + 1H + 15M)\n\n"
 
-        for i, c in enumerate(coins, 1):
-            symbol = c["symbol"]
+    for i, c in enumerate(coins, 1):
+        symbol = c["symbol"]
 
-            base = 50
-            if c["trend_1d"] == "bull":
-                base += 10
-            if c["trend_1d"] == c["trend_4h"] == c["trend"]:
-                base += 15
-            if c["momentum"] == "strong":
-                base += 5
-            if c["momentum_4h"] == "strong":
-                base += 5
-            if c["momentum_1d"] == "strong":
-                base += 5
-            if c["pos_range"] > 70 and c["trend"] == "bull":
-                base += 5
-            if c["pos_range"] < 30 and c["trend"] == "bear":
-                base += 5
+        base = 50
+        if c["trend_1d"] == "bull":
+            base += 10
+        if c["trend_1d"] == c["trend_4h"] == c["trend"]:
+            base += 15
+        if c["momentum"] == "strong":
+            base += 5
+        if c["momentum_4h"] == "strong":
+            base += 5
+        if c["momentum_1d"] == "strong":
+            base += 5
+        if c["pos_range"] > 70 and c["trend"]=="bull":
+            base += 5
+        if c["pos_range"] < 30 and c["trend"]=="bear":
+            base += 5
 
-            prob = max(40, min(90, base))
+        prob = max(40, min(90, base))
 
-            # 1D
-            if c["trend_1d"] == "bull":
-                txt1d = "اتجاه صاعد رئيسي"
-            elif c["trend_1d"] == "bear":
-                txt1d = "اتجاه هابط رئيسي"
-            else:
-                txt1d = "اتجاه يومي جانبي"
+        # 1D
+        if c["trend_1d"]=="bull":
+            txt1d = "اتجاه صاعد رئيسي"
+        elif c["trend_1d"]=="bear":
+            txt1d = "اتجاه هابط رئيسي"
+        else:
+            txt1d = "اتجاه يومي جانبي"
 
-            # 4h
-            if c["trend_4h"] == "bull":
-                txt4 = "اتجاه صاعد قوي" if c["momentum_4h"] == "strong" else "اتجاه صاعد"
-            elif c["trend_4h"] == "bear":
-                txt4 = "اتجاه هابط قوي" if c["momentum_4h"] == "strong" else "اتجاه هابط"
-            else:
-                txt4 = "اتجاه جانبي"
+        # 4h
+        if c["trend_4h"]=="bull":
+            txt4 = "اتجاه صاعد قوي" if c["momentum_4h"]=="strong" else "اتجاه صاعد"
+        elif c["trend_4h"]=="bear":
+            txt4 = "اتجاه هابط قوي" if c["momentum_4h"]=="strong" else "اتجاه هابط"
+        else:
+            txt4 = "اتجاه جانبي"
 
-            # 1h
-            if c["trend"] == "bull":
-                txt1 = "زخم إيجابي مستمر" if c["momentum"] == "strong" else "زخم إيجابي"
-            elif c["trend"] == "bear":
-                txt1 = "زخم بيعي" if c["momentum"] == "strong" else "زخم ضعيف"
-            else:
-                txt1 = "حركة جانبية"
+        # 1h
+        if c["trend"]=="bull":
+            txt1 = "زخم إيجابي مستمر" if c["momentum"]=="strong" else "زخم إيجابي"
+        elif c["trend"]=="bear":
+            txt1 = "زخم بيعي" if c["momentum"]=="strong" else "زخم ضعيف"
+        else:
+            txt1 = "حركة جانبية"
 
-            # 15m
-            if 40 <= c["pos_range"] <= 60:
-                txt15 = "تماسك قبل اندفاع محتمل"
-            elif c["pos_range"] > 70 and c["trend"] == "bull":
-                txt15 = "منطقة قرب مقاومة محتملة"
-            elif c["pos_range"] < 30 and c["trend"] == "bear":
-                txt15 = "ضغط بيعي قرب دعم مكسور"
-            else:
-                txt15 = "حركة متذبذبة"
+        # 15m (تقدير من موقع السعر)
+        if 40 <= c["pos_range"] <= 60:
+            txt15 = "تماسك قبل اندفاع محتمل"
+        elif c["pos_range"] > 70 and c["trend"]=="bull":
+            txt15 = "منطقة قرب مقاومة محتملة"
+        elif c["pos_range"] < 30 and c["trend"]=="bear":
+            txt15 = "ضغط بيعي قرب دعم مكسور"
+        else:
+            txt15 = "حركة متذبذبة"
 
-            direction_icon = "📈" if c["trend_1d"] == "bull" else "📉" if c["trend_1d"] == "bear" else "⚖️"
-            direction_word = "صعود" if direction_icon == "📈" else "هبوط" if direction_icon == "📉" else "حركة جانبية"
+        direction_icon = "📈" if c["trend_1d"]=="bull" else "📉" if c["trend_1d"]=="bear" else "⚖️"
+        direction_word = "صعود" if direction_icon=="📈" else "هبوط" if direction_icon=="📉" else "حركة جانبية"
 
-            msg += f"{i}) {symbol}\n"
-            msg += f"📅 1D: {txt1d}\n"
-            msg += f"🕓 4h: {txt4}\n"
-            msg += f"🕐 1h: {txt1}\n"
-            msg += f"🕒 15m: {txt15}\n"
-            msg += f"{direction_icon} التوقع: {prob:.0f}% {direction_word} خلال الساعات القادمة\n\n"
+        msg += f"{i}) {symbol}\n"
+        msg += f"📅 1D: {txt1d}\n"
+        msg += f"🕓 4h: {txt4}\n"
+        msg += f"🕐 1h: {txt1}\n"
+        msg += f"🕒 15m: {txt15}\n"
+        msg += f"{direction_icon} التوقع: {prob:.0f}% {direction_word} خلال الساعات القادمة\n\n"
 
-        return msg
+    return msg
 
-
-    # ================== رسالة الصفقات اليدوية ==================
+# ================== رسالة الصفقات اليدوية ==================
 def build_trades_message(trades=None):
-        if trades is None:
-            trades = find_best_trades(top_20_liquid_coins())
+    if trades is None:
+        trades = find_best_trades(top_20_liquid_coins())
 
-        if not trades:
-            return "لا توجد صفقات واضحة حالياً."
+    if not trades:
+        return "لا توجد صفقات واضحة حالياً."
 
-        msg = ""
+    msg = ""
 
-        for i, t in enumerate(trades, 1):
-            symbol = t["symbol"]
-            trend = t["trend"]
-            direction_icon = "🟢" if trend == "bull" else "🔴"
-
-            ep = t["entry_price"]
-            sl = t["sl"]
-            tp = t["tp"]
-            rr = t["rr"]
-            success = t["success"]
-            reason = t["reason"]
-
-            if t["type"] == "فوري":
-                trade_text = format_instant_trade(
-                    symbol, direction_icon, ep, sl, tp, rr, success,
-                    f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
-                )
-            else:
-                trade_text = format_pending_trade(
-                    symbol, direction_icon, ep, sl, tp, rr, success,
-                    f"توافق الإطارات الزمنية 1D+4H+1H + {reason}"
-                )
-
-            msg += "🥇 " if i == 1 else "🥈 "
-            msg += trade_text + "\n\n"
-
-            if i != len(trades):
-                msg += "==============================\n\n"
-
-        return msg.strip()
-
-
-    # ================== رسالة الفحص التلقائي ==================
-def build_auto_scan_message(trades):
-        if not trades:
-            return None
-
-        t = trades[0]
-        symbol = t["symbol"]
-        trend = t["trend"]
-        direction = "Long" if trend == "bull" else "Short"
-        direction_icon = "🟢" if trend == "bull" else "🔴"
-
-        ep = t["entry_price"]
-        sl = t["sl"]
-        tp = t["tp"]
+    for i, t in enumerate(trades, 1):
+        ep = t["entry"]["entry_price"]
+        sl = t["sl"]; tp = t["tp"]
         rr = t["rr"]
         success = t["success"]
-        reason = t["reason"]
+        direction_icon = "🟢" if t["trend"]=="bull" else "🔴"
 
-        last_price = t["last_price"]
-        diff = abs(last_price - ep) / ep * 100
-        is_pending = diff > 0.1 and diff <= 1
+        rank_icon = "🥇" if i == 1 else "🥈"
 
-        if is_pending:
-            return f"""
-    ⏰ فحص تلقائي — فرصة جديدة (معلق)
+        # الصفقة الفورية
+        msg += f"{rank_icon} {t['symbol']} — {direction_icon} ({t['entry']['entry_type']})\n\n"
+        msg += f"Entry: {fmt_price(ep)}\n"
+        msg += f"SL: {fmt_price(sl)}\n"
+        msg += f"TP: {fmt_price(tp)}\n"
+        msg += f"R:R = 1:{rr:.2f}\n"
+        msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
 
-    🎯 {symbol} — {direction_icon} {direction}
-    Entry: {fmt_price(ep)}
-    SL: {fmt_price(sl)}
-    TP: {fmt_price(tp)}
-    R:R = 1:{rr:.2f}
-    نسبة النجاح المتوقعة: {success:.0f}%
+        reason = t["entry"]["reason"]
+        extra_reason = "توافق الإطارات الزمنية 1D+4H+1H"
+        if t.get("has_fvg_1h"):
+            extra_reason += " + وجود FVG على 1H"
+        msg += f"📌 السبب: {extra_reason} + {reason}\n\n"
 
-    📌 السبب: {reason}
-    سيتم إرسال تذكير عند وصول السعر إلى منطقة الدخول.
-    """.strip()
+        # خط أفقي يفصل بين الصفقتين اليدويتين
+        if "pending_entry" in t:
+            msg += "────────────\n\n"
+            p = t["pending_entry"]["entry_price"]
+            msg += f"📌 صفقة معلقة (انحراف 1%) — ({t['pending_entry']['entry_type']})\n\n"
+            msg += f"Entry: {fmt_price(p)}\n"
+            msg += f"SL: {fmt_price(sl)}\n"
+            msg += f"TP: {fmt_price(tp)}\n"
+            msg += f"R:R (تقريبي) = 1:{rr:.2f}\n"
+            msg += f"📩 عند وصول السعر لهذه المنطقة ستظهر رسالة تأكيد دخول.\n\n"
 
-        else:
-            return f"""
-    ⏰ فحص تلقائي — فرصة جديدة (فوري)
+        if i != len(trades):
+            msg += "==============================\n\n"
 
-    🎯 {symbol} — {direction_icon} {direction}
-    Entry: {fmt_price(ep)}
-    SL: {fmt_price(sl)}
-    TP: {fmt_price(tp)}
-    R:R = 1:{rr:.2f}
-    نسبة النجاح المتوقعة: {success:.0f}%
+    return msg
 
-    📌 السبب: {reason}
-    """.strip()
+# ================== رسالة الفحص التلقائي ==================
+def build_auto_scan_message(trades):
+    if not trades:
+        return None
 
-    # ================== الفحص التلقائي ==================
+    t = trades[0]
+    ep = t["entry"]["entry_price"]
+    sl = t["sl"]; tp = t["tp"]
+    rr = t["rr"]
+    success = t["success"]
+    direction = "Long" if t["trend"]=="bull" else "Short"
+
+    msg = "⏰ فحص تلقائي — فرصة جديدة\n\n"
+    msg += f"🎯 {t['symbol']} — {direction} (فوري)\n"
+    msg += f"Entry: {fmt_price(ep)}\n"
+    msg += f"SL: {fmt_price(sl)}\n"
+    msg += f"TP: {fmt_price(tp)}\n"
+    msg += f"R:R = 1:{rr:.2f}\n"
+    msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
+
+    reason = t["entry"]["reason"]
+    extra_reason = "شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق"
+    if t.get("has_fvg_1h"):
+        extra_reason += " + FVG على 1H"
+    msg += f"📌 السبب: {extra_reason}\n"
+
+    return msg
+
+# ================== الفحص التلقائي ==================
 def auto_scan_loop():
-        global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
+    global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
 
-        while True:
-            try:
-                if LAST_CHAT_ID:
-                    trades = find_best_trades(top_20_liquid_coins())
+    while True:
+        try:
+            if LAST_CHAT_ID:
+                trades = find_best_trades(top_20_liquid_coins())
 
-                    if trades:
-                        now = time.time()
-                        filtered = []
+                if trades:
+                    now = time.time()
+                    filtered = []
 
-                        for t in trades:
-                            sig = make_signature(t)
+                    for t in trades:
+                        sig = make_signature(t)
 
-                            with lock:
-                                if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
-                                    continue
+                        with lock:
+                            if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
+                                continue
 
-                                LAST_TRADE_SIGNATURE[sig] = now
+                            LAST_TRADE_SIGNATURE[sig] = now
 
-                            filtered.append(t)
+                        filtered.append(t)
 
-                        if filtered:
-                            msg = build_auto_scan_message(filtered)
-                            if msg and can_send("auto_scan_msg"):
-                                bot.send_message(LAST_CHAT_ID, msg)
+                    if filtered:
+                        msg = build_auto_scan_message(filtered)
+                        if msg and can_send("auto_scan_msg"):
+                            bot.send_message(LAST_CHAT_ID, msg)
 
-                            # 🔔 تذكير عند وصول السعر لمنطقة الدخول للصفقات المعلقة
-                            for t in filtered:
-                                if t["type"] == "معلق":
-                                    ep = t["entry_price"]
-                                    lp = t["last_price"]
+                        # تأكيد دخول للصفقات المعلقة عند وصول السعر
+                        for t in filtered:
+                            if "pending_entry" in t and "last_price" in t:
+                                pe = t["pending_entry"]["entry_price"]
+                                lp = t["last_price"]
+                                if t["trend"] == "bull" and lp <= pe:
+                                    if can_send(f"pending_confirm_{t['symbol']}"):
+                                        bot.send_message(
+                                            LAST_CHAT_ID,
+                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
+                                        )
+                                if t["trend"] == "bear" and lp >= pe:
+                                    if can_send(f"pending_confirm_{t['symbol']}"):
+                                        bot.send_message(
+                                            LAST_CHAT_ID,
+                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
+                                        )
 
-                                    if t["trend"] == "bull" and lp <= ep:
-                                        if can_send(f"pending_reach_{t['symbol']}"):
-                                            bot.send_message(
-                                                LAST_CHAT_ID,
-                                                f"🔔 تذكير: السعر الآن في منطقة الدخول المقترحة لعملة {t['symbol']} عند {fmt_price(ep)}"
-                                            )
+        except Exception as e:
+            print("Auto scan error:", e)
 
-                                    if t["trend"] == "bear" and lp >= ep:
-                                        if can_send(f"pending_reach_{t['symbol']}"):
-                                            bot.send_message(
-                                                LAST_CHAT_ID,
-                                                f"🔔 تذكير: السعر الآن في منطقة الدخول المقترحة لعملة {t['symbol']} عند {fmt_price(ep)}"
-                                            )
+        time.sleep(600)
 
-            except Exception as e:
-                print("Auto scan error:", e)
-
-            time.sleep(600)
-
-
-    # ================== الهاندلرز ==================
+# ================== الهاندلرز ==================
 @bot.message_handler(commands=['start'])
 def start(m):
-        global LAST_CHAT_ID
-        LAST_CHAT_ID = m.chat.id
+    global LAST_CHAT_ID
+    LAST_CHAT_ID = m.chat.id
 
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add("تحليل", "صفقات")
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("تحليل", "صفقات")
 
-        bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
-
+    bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
 def main_handler(m):
-        global LAST_CHAT_ID
-        LAST_CHAT_ID = m.chat.id
+    global LAST_CHAT_ID
+    LAST_CHAT_ID = m.chat.id
 
-        if m.text == "تحليل":
-            wait = bot.reply_to(m, "جاري تحليل السوق على (1D + 4H + 1H + 15M)...")
+    if m.text == "تحليل":
+        wait = bot.reply_to(m, "جاري تحليل السوق على (1D + 4H + 1H + 15M)...")
 
-            try:
-                msg = build_analysis_message()
-                bot.edit_message_text(msg, m.chat.id, wait.message_id)
+        try:
+            msg = build_analysis_message()
+            bot.edit_message_text(msg, m.chat.id, wait.message_id)
 
-            except Exception as e:
-                bot.edit_message_text("حدث خطأ أثناء التحليل.", m.chat.id, wait.message_id)
-                print("Analysis error:", e)
+        except Exception as e:
+            bot.edit_message_text("حدث خطأ أثناء التحليل.", m.chat.id, wait.message_id)
+            print("Analysis error:", e)
 
-        else:
-            wait = bot.reply_to(m, "جاري البحث عن أفضل الصفقات...")
+    else:
+        wait = bot.reply_to(m, "جاري البحث عن أفضل الصفقات...")
 
-            try:
-                msg = build_trades_message()
-                bot.edit_message_text(msg, m.chat.id, wait.message_id)
+        try:
+            msg = build_trades_message()
+            bot.edit_message_text(msg, m.chat.id, wait.message_id)
 
-            except Exception as e:
-                bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
-                print("Trades error:", e)
+        except Exception as e:
+            bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
+            print("Trades error:", e)
 
-
-    # ================== التشغيل ==================
+# ================== التشغيل ==================
 print("Bot is running...")
 
 threading.Thread(target=auto_scan_loop, daemon=True).start()
 
 def start_bot():
-        bot.infinity_polling(skip_pending=True)
+    bot.infinity_polling(skip_pending=True)
 
 threading.Thread(target=start_bot, daemon=True).start()
 
 if __name__ == "__main__":
-        port = int(os.environ.get("PORT", 5000))
-        app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
