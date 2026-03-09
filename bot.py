@@ -17,6 +17,7 @@ LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
 LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
 lock = threading.Lock()
 
+
     def can_send(key):
         now = time.time()
         if key in LAST_SENT:
