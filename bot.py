@@ -1,22 +1,21 @@
 from flask import Flask
-    import threading
-    import os
-    import time
-    import logging
-    import requests
-    import pandas as pd
-    import numpy as np
-    import telebot
-    from telebot import types
+import threading
+import os
+import time
+import logging
+import requests
+import pandas as pd
+import numpy as np
+import telebot
+from telebot import types
 
-    # جلسة اتصال ثابتة مع Binance ولباقي الطلبات
-    session = requests.Session()
+# جلسة اتصال ثابتة مع Binance ولباقي الطلبات
+session = requests.Session()
 
-    # ================== منع تكرار الإرسال ==================
-    LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
-    LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
-    lock = threading.Lock()
-
+# ================== منع تكرار الإرسال ==================
+LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
+LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
+lock = threading.Lock()
 
     def can_send(key):
         now = time.time()
