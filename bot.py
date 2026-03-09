@@ -9,16 +9,16 @@ import numpy as np
 import telebot
 from telebot import types
 
-# جلسة اتصال ثابتة مع Binance ولباقي الطلبات
+    # جلسة اتصال ثابتة مع Binance ولباقي الطلبات
 session = requests.Session()
 
-# ================== منع تكرار الإرسال ==================
+    # ================== منع تكرار الإرسال ==================
 LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
 LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
 lock = threading.Lock()
 
 
-    def can_send(key):
+def can_send(key):
         now = time.time()
         if key in LAST_SENT:
             if now - LAST_SENT[key] < 1800:  # نصف ساعة
@@ -27,32 +27,32 @@ lock = threading.Lock()
         return True
 
 
-    def make_signature(t):
+def make_signature(t):
         # التوقيع يعتمد على بيانات الصفقة النهائية
         return f"{t['symbol']}-{t['trend']}-{t['entry_price']:.4f}-{t['sl']:.4f}-{t['tp']:.4f}"
 
 
     # ================== Flask ==================
-    app = Flask(__name__)
+app = Flask(__name__)
 
 
-    @app.route("/")
-    def home():
+@app.route("/")
+def home():
         return "Bot is running"
 
 
     # ================== إعداد اللوج ==================
-    logging.basicConfig(level=logging.CRITICAL)
+logging.basicConfig(level=logging.CRITICAL)
 
     # ================== البوت ==================
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    bot = telebot.TeleBot(BOT_TOKEN)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-    LAST_CHAT_ID = None
+LAST_CHAT_ID = None
 
 
     # ================== قائمة العملات ==================
-    def top_20_liquid_coins():
+def top_20_liquid_coins():
         return [
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
             "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
@@ -62,7 +62,7 @@ lock = threading.Lock()
 
 
     # ================== جلب الأخبار (CryptoPanic API) ==================
-    def fetch_crypto_news():
+def fetch_crypto_news():
         try:
             url = "https://cryptopanic.com/api/v1/posts/?auth_token=&public=true"
             r = requests.get(url, timeout=10)
@@ -85,7 +85,7 @@ lock = threading.Lock()
 
 
     # ================== المؤشرات الفنية (RSI) ==================
-    def calc_rsi(df, period=14):
+def calc_rsi(df, period=14):
         delta = df["c"].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -99,7 +99,7 @@ lock = threading.Lock()
         return rsi
 
 
-    def rsi_filter(df, side):
+def rsi_filter(df, side):
         rsi = calc_rsi(df).iloc[-1]
 
         if side == "LONG" and rsi > 70:
@@ -110,12 +110,12 @@ lock = threading.Lock()
         return True
 
 
-    def data_ok(df, min_len=80):
+def data_ok(df, min_len=80):
         """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
         return df is not None and len(df) >= min_len
 
 
-    def fetch_funding_rate(symbol):
+def fetch_funding_rate(symbol):
         """جلب رسوم التمويل من Binance API"""
         try:
             url = "https://fapi.binance.com/fapi/v1/premiumIndex"
@@ -126,7 +126,7 @@ lock = threading.Lock()
 
 
     # ================== جلب البيانات ==================
-    def fetch_klines(symbol, interval="1h", limit=200):
+def fetch_klines(symbol, interval="1h", limit=200):
         urls = [
             "https://fapi.binance.com/fapi/v1/klines",
             "https://fapi1.binance.com/fapi/v1/klines",
@@ -164,7 +164,7 @@ lock = threading.Lock()
 
 
     # ================== أدوات التحليل ==================
-    def calc_candle_features(df):
+def calc_candle_features(df):
         o = df["o"]
         h = df["h"]
         l = df["l"]
@@ -175,7 +175,7 @@ lock = threading.Lock()
         return body, upper, lower
 
 
-    def detect_trend(df, lookback=50):
+def detect_trend(df, lookback=50):
         df = df.iloc[-lookback:]
         highs = df["h"]
         lows = df["l"]
@@ -197,7 +197,7 @@ lock = threading.Lock()
         return trend, momentum, desc
 
 
-    def calc_percent_metrics(df):
+def calc_percent_metrics(df):
         close_last = df["c"].iloc[-1]
         close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
         change_24 = (close_last - close_24) / close_24 * 100 if close_24 else 0
@@ -212,7 +212,7 @@ lock = threading.Lock()
         return change_1h, change_24, pos
 
 
-    def calc_atr(df, period=14):
+def calc_atr(df, period=14):
         high = df["h"]
         low = df["l"]
         close = df["c"]
@@ -225,14 +225,14 @@ lock = threading.Lock()
         return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
 
 
-    def avg_volume(df, period=50):
+def avg_volume(df, period=50):
         if df is None or len(df) < period:
             return None
         return df["v"].iloc[-period:].mean()
 
 
     # FVG مبسط على فريم الساعة
-    def detect_fvg_1h(df):
+def detect_fvg_1h(df):
         # نموذج 3 شموع: الشمعة 1 – 2 – 3
         if len(df) < 3:
             return False
@@ -253,7 +253,7 @@ lock = threading.Lock()
         return bullish_fvg or bearish_fvg
 
     # ================== فلاتر إضافية متقدمة (FVG + OB + Liquidity) ==================
-    def check_fvg_risk(df, entry_price, trend):
+def check_fvg_risk(df, entry_price, trend):
         if len(df) < 10:
             return False
 
@@ -272,7 +272,7 @@ lock = threading.Lock()
         return False
 
 
-    def check_order_block(df, entry_price, trend):
+def check_order_block(df, entry_price, trend):
         if len(df) < 20:
             return False
 
@@ -296,7 +296,7 @@ lock = threading.Lock()
         return False
 
 
-    def check_liquidity_cluster(df, entry_price):
+def check_liquidity_cluster(df, entry_price):
         if len(df) < 30:
             return False
 
@@ -310,7 +310,7 @@ lock = threading.Lock()
         return False
 
 
-    def extra_filters(df15, entry_price, trend):
+def extra_filters(df15, entry_price, trend):
         if check_fvg_risk(df15, entry_price, trend):
             return True
 
@@ -324,7 +324,7 @@ lock = threading.Lock()
 
 
     # ================== تحليل 1D ==================
-    def analyze_symbol_1d(symbol):
+def analyze_symbol_1d(symbol):
         df = fetch_klines(symbol, "1d", 200)
         if not data_ok(df, 120):
             return None
@@ -350,7 +350,7 @@ lock = threading.Lock()
 
 
     # ================== تحليل 1h ==================
-    def analyze_symbol_1h(symbol):
+def analyze_symbol_1h(symbol):
         df = fetch_klines(symbol, "1h", 200)
         if not data_ok(df, 120):
             return None
@@ -381,7 +381,7 @@ lock = threading.Lock()
 
 
     # ================== تحليل 4h ==================
-    def analyze_symbol_4h(symbol):
+def analyze_symbol_4h(symbol):
         df = fetch_klines(symbol, "4h", 200)
         if not data_ok(df, 80):
             return None
@@ -396,7 +396,7 @@ lock = threading.Lock()
 
 
     # ================== دخول 15m ==================
-    def detect_entry_15m(df, trend):
+def detect_entry_15m(df, trend):
         last = df.iloc[-5:]
         body, upper, lower = calc_candle_features(last)
 
@@ -436,16 +436,16 @@ lock = threading.Lock()
 
 
     # ================== تنسيق ==================
-    def fmt_price(x):
+def fmt_price(x):
         return f"{x:.4f}"
 
 
-    def fmt_pct(x):
+def fmt_pct(x):
         return f"{x:.2f}%"
 
 
     # ================== حساب نسبة النجاح ==================
-    def calc_success_prob(t):
+def calc_success_prob(t):
         score = 0
         rr = t["rr"]
 
@@ -501,7 +501,7 @@ lock = threading.Lock()
 
 
     # ================== اختيار R:R ==================
-    def choose_rr(info1, info4, info1d):
+def choose_rr(info1, info4, info1d):
         base = 2.5
         rr = base
 
@@ -531,7 +531,7 @@ lock = threading.Lock()
         return min(max(rr, 2.5), 7.0)
 
     # ================== أفضل الصفقات ==================
-    def find_best_trades(symbols):
+def find_best_trades(symbols):
         results = []
 
         for sym in symbols:
@@ -694,7 +694,7 @@ lock = threading.Lock()
         return results[:2]
 
     # ================== تحليل السوق ==================
-    def analyze_top_coins(symbols):
+def analyze_top_coins(symbols):
         out = []
         for sym in symbols:
             info1d = analyze_symbol_1d(sym)
@@ -726,7 +726,7 @@ lock = threading.Lock()
         return sorted(out, key=lambda x: x["score"], reverse=True)[:5]
 
 
-    def build_analysis_message():
+def build_analysis_message():
         coins = analyze_top_coins(top_20_liquid_coins())
         if not coins:
             return "لا يوجد تحليل متاح حالياً."
@@ -802,7 +802,7 @@ lock = threading.Lock()
 
 
     # ================== رسالة الصفقات اليدوية ==================
-    def build_trades_message(trades=None):
+def build_trades_message(trades=None):
         if trades is None:
             trades = find_best_trades(top_20_liquid_coins())
 
@@ -844,7 +844,7 @@ lock = threading.Lock()
 
 
     # ================== رسالة الفحص التلقائي ==================
-    def build_auto_scan_message(trades):
+def build_auto_scan_message(trades):
         if not trades:
             return None
 
@@ -895,7 +895,7 @@ lock = threading.Lock()
     """.strip()
 
     # ================== الفحص التلقائي ==================
-    def auto_scan_loop():
+def auto_scan_loop():
         global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
 
         while True:
@@ -950,8 +950,8 @@ lock = threading.Lock()
 
 
     # ================== الهاندلرز ==================
-    @bot.message_handler(commands=['start'])
-    def start(m):
+@bot.message_handler(commands=['start'])
+def start(m):
         global LAST_CHAT_ID
         LAST_CHAT_ID = m.chat.id
 
@@ -961,8 +961,8 @@ lock = threading.Lock()
         bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
 
 
-    @bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
-    def main_handler(m):
+@bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
+def main_handler(m):
         global LAST_CHAT_ID
         LAST_CHAT_ID = m.chat.id
 
@@ -990,15 +990,15 @@ lock = threading.Lock()
 
 
     # ================== التشغيل ==================
-    print("Bot is running...")
+print("Bot is running...")
 
-    threading.Thread(target=auto_scan_loop, daemon=True).start()
+threading.Thread(target=auto_scan_loop, daemon=True).start()
 
-    def start_bot():
+def start_bot():
         bot.infinity_polling(skip_pending=True)
 
-    threading.Thread(target=start_bot, daemon=True).start()
+threading.Thread(target=start_bot, daemon=True).start()
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
         port = int(os.environ.get("PORT", 5000))
         app.run(host="0.0.0.0", port=port)
