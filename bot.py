@@ -532,167 +532,155 @@ def choose_rr(info1, info4, info1d):
 
     # ================== أفضل الصفقات ==================
 def find_best_trades(symbols):
-        results = []
+    results = []
 
-        for sym in symbols:
+    for sym in symbols:
 
-            # تحليل اليومي
-            info1d = analyze_symbol_1d(sym)
-            if not info1d:
-                continue
+        # تحليل اليومي
+        info1d = analyze_symbol_1d(sym)
+        if not info1d:
+            continue
 
-            # تحليل الساعة
-            info1 = analyze_symbol_1h(sym)
-            if not info1:
-                continue
+        # تحليل الساعة
+        info1 = analyze_symbol_1h(sym)
+        if not info1:
+            continue
 
-            # تحليل الأربع ساعات
-            info4 = analyze_symbol_4h(sym)
-            if not info4:
-                continue
+        # تحليل الأربع ساعات
+        info4 = analyze_symbol_4h(sym)
+        if not info4:
+            continue
 
-            # شرط الاتجاه: لا ندخل عكس الاتجاه اليومي
-            if (
-                info1["trend"] != info1d["trend_1d"]
-                or info4["trend_4h"] != info1d["trend_1d"]
-            ):
-                continue
+        # شرط الاتجاه: لا ندخل عكس الاتجاه اليومي
+        if (
+            info1["trend"] != info1d["trend_1d"]
+            or info4["trend_4h"] != info1d["trend_1d"]
+        ):
+            continue
 
-            # بيانات 15 دقيقة
-            df15 = fetch_klines(sym, "15m", 200)
-            if not data_ok(df15, 80):
-                continue
+        # بيانات 15 دقيقة
+        df15 = fetch_klines(sym, "15m", 200)
+        if not data_ok(df15, 80):
+            continue
 
-            entry = detect_entry_15m(df15, info1["trend"])
+        entry = detect_entry_15m(df15, info1["trend"])
 
-            # منطق اختيار نوع الصفقة (فوري أو معلق)
-            if entry:
-                final_type = "فوري"
-                final_entry_price = entry["entry_price"]
-                final_reason = entry["reason"]
-                ep = entry["entry_price"]
-            else:
-                final_type = "معلق"
-                if info1["trend"] == "bull":
-                    final_entry_price = info1["last_price"] * 0.99
-                else:
-                    final_entry_price = info1["last_price"] * 1.01
-                final_reason = "انحراف 1%"
-                ep = final_entry_price   # ← إصلاح الخطأ
-
-            # فلاتر إضافية متقدمة
-            if extra_filters(df15, ep, info1["trend"]):
-                continue
-
-            # ATR آمن
-            atr = info1["atr_1h"]
-            if atr is None or atr <= 0:
-                continue
-
-            # اختيار R:R
-            rr = choose_rr(info1, info4, info1d)
-            if rr < 2.5:
-                continue
-
-            # فلتر RSI
-            df_rsi = fetch_klines(sym, "1h", 200)
-            if df_rsi is None or not data_ok(df_rsi):
-                continue
-
-            side = "LONG" if info1["trend"] == "bull" else "SHORT"
-            if not rsi_filter(df_rsi, side):
-                continue
-
-            # فلتر الأخبار
-            news = fetch_crypto_news()
-            if news:
-                bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
-                if len(bad_news) > 0:
-                    print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
-                    continue
-
-            # حساب SL و TP
+        # منطق اختيار نوع الصفقة (فوري أو معلق)
+        if entry:
+            final_type = "فوري"
+            final_entry_price = entry["entry_price"]
+            final_reason = entry["reason"]
+            ep = entry["entry_price"]
+        else:
+            final_type = "معلق"
             if info1["trend"] == "bull":
-                sl = ep - 1.5 * atr
-                tp = ep + rr * 1.5 * atr
+                final_entry_price = info1["last_price"] * 0.99
             else:
-                sl = ep + 1.5 * atr
-                tp = ep - rr * 1.5 * atr
+                final_entry_price = info1["last_price"] * 1.01
+            final_reason = "انحراف 1%"
+            ep = final_entry_price
 
-            # التأكد من أن نقطة الدخول بين SL و TP
-            if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
-               (info1["trend"] == "bear" and not (tp < ep < sl)):
+        # فلاتر إضافية متقدمة
+        if extra_filters(df15, ep, info1["trend"]):
+            continue
+
+        # ATR آمن
+        atr = info1["atr_1h"]
+        if atr is None or atr <= 0:
+            continue
+
+        # اختيار R:R
+        rr = choose_rr(info1, info4, info1d)
+        if rr < 2.5:
+            continue
+
+        # فلتر RSI
+        df_rsi = fetch_klines(sym, "1h", 200)
+        if df_rsi is None or not data_ok(df_rsi):
+            continue
+
+        side = "LONG" if info1["trend"] == "bull" else "SHORT"
+        if not rsi_filter(df_rsi, side):
+            continue
+
+        # فلتر الأخبار
+        news = fetch_crypto_news()
+        if news:
+            bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
+            if len(bad_news) > 0:
+                print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
                 continue
 
-            real_rr = abs((tp - ep) / (ep - sl))
-            if real_rr < 2.5:
-                continue
+        # حساب SL و TP
+        if info1["trend"] == "bull":
+            sl = ep - 1.5 * atr
+            tp = ep + rr * 1.5 * atr
+        else:
+            sl = ep + 1.5 * atr
+            tp = ep - rr * 1.5 * atr
 
-            # حساب نسبة النجاح
-            success = calc_success_prob({
-                "rr": real_rr,
-                "trend": info1["trend"],
-                "trend_4h": info4["trend_4h"],
-                "trend_1d": info1d["trend_1d"],
-                "momentum": info1["momentum"],
-                "momentum_4h": info4["momentum_4h"],
-                "momentum_1d": info1d["momentum_1d"],
-                "pos_range": info1["pos_range"],
-                "has_fvg": info1["has_fvg"],   # ← إصلاح الخطأ
-                "zone_1d": info1d["zone_1d"],
-                "funding": info1["funding"],
-                "vol_avg": info1["vol_avg"],
-                "vol_last": info1["vol_last"]
-            })
+        # التأكد من أن نقطة الدخول بين SL و TP
+        if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
+           (info1["trend"] == "bear" and not (tp < ep < sl)):
+            continue
 
-            if success < 70:
-                continue
+        real_rr = abs((tp - ep) / (ep - sl))
+        if real_rr < 2.5:
+            continue
 
-            t_success = success
+        # حساب نسبة النجاح
+        success = calc_success_prob({
+            "rr": real_rr,
+            "trend": info1["trend"],
+            "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
+            "momentum": info1["momentum"],
+            "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
+            "pos_range": info1["pos_range"],
+            "has_fvg": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"],
+            "funding": info1["funding"],
+            "vol_avg": info1["vol_avg"],
+            "vol_last": info1["vol_last"]
+        })
 
-            # صفقة معلقة بانحراف 1%
-            if info1["trend"] == "bull":
-                pending_price = ep * 0.99
-            else:
-                pending_price = ep * 1.01
+        if success < 70:
+            continue
 
-            pending_entry = {
-                "entry_type": "معلق",
-                "entry_price": pending_price,
-                "reason": entry["reason"] + " (انحراف 1%)" if entry else "انحراف 1%"
-            }
+        t_success = success
 
-            results.append({
-                "symbol": sym,
-                "trend": info1["trend"],
-                "trend_4h": info4["trend_4h"],
-                "trend_1d": info1d["trend_1d"],
-                "momentum": info1["momentum"],
-                "momentum_4h": info4["momentum_4h"],
-                "momentum_1d": info1d["momentum_1d"],
-                "type": final_type,
-                "entry_price": final_entry_price,
-                "reason": final_reason,
-                "sl": sl,
-                "tp": tp,
-                "rr": real_rr,
-                "change_1h": info1["change_1h"],
-                "change_24h": info1["change_24h"],
-                "pos_range": info1["pos_range"],
-                "has_fvg": info1["has_fvg"],
-                "zone_1d": info1d["zone_1d"],
-                "funding": info1["funding"],
-                "vol_avg": info1["vol_avg"],
-                "vol_last": info1["vol_last"],
-                "last_price": info1["last_price"],
-                "success": t_success
-            })
+        # إضافة الصفقة النهائية
+        results.append({
+            "symbol": sym,
+            "trend": info1["trend"],
+            "trend_4h": info4["trend_4h"],
+            "trend_1d": info1d["trend_1d"],
+            "momentum": info1["momentum"],
+            "momentum_4h": info4["momentum_4h"],
+            "momentum_1d": info1d["momentum_1d"],
+            "type": final_type,
+            "entry_price": final_entry_price,
+            "reason": final_reason,
+            "sl": sl,
+            "tp": tp,
+            "rr": real_rr,
+            "change_1h": info1["change_1h"],
+            "change_24h": info1["change_24h"],
+            "pos_range": info1["pos_range"],
+            "has_fvg": info1["has_fvg"],
+            "zone_1d": info1d["zone_1d"],
+            "funding": info1["funding"],
+            "vol_avg": info1["vol_avg"],
+            "vol_last": info1["vol_last"],
+            "last_price": info1["last_price"],
+            "success": t_success
+        })
 
-            time.sleep(0.05)
+        time.sleep(0.05)
 
-        results = sorted(results, key=lambda x: x["rr"], reverse=True)
-        return results[:2]
-
+    results = sorted(results, key=lambda x: x["rr"], reverse=True)
+    return results[:2]
     # ================== تحليل السوق ==================
 def analyze_top_coins(symbols):
         out = []
