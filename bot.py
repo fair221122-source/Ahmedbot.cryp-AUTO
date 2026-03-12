@@ -1774,25 +1774,24 @@ def main():
     )
 
     # -------------------------
-    # تشغيل FastAPI في ثريد منفصل
-    # -------------------------
-    threading.Thread(target=run_api, daemon=True).start()
-
-    # -------------------------
-    # تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
+    # 1. تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
     # -------------------------
     loop = asyncio.get_event_loop()
     loop.create_task(BOOT(application))
 
     # -------------------------
-    # تشغيل بوت التليجرام
+    # 2. تشغيل بوت التليجرام (Polling)
     # -------------------------
+    # ملاحظة: run_polling هي دالة "حاجزة" (Blocking)، لذا نتركها كآخر شيء في main
     application.run_polling()
 
 
 if __name__ == "__main__":
-    # تشغيل بوت التليجرام في Thread
-    threading.Thread(target=lambda: asyncio.run(start_bot()), daemon=True).start()
+    # -------------------------
+    # 3. تشغيل FastAPI في ثريد منفصل (هنا فقط لضمان عدم التضارب)
+    # -------------------------
+    threading.Thread(target=run_api, daemon=True).start()
 
-    # تشغيل FastAPI كعملية رئيسية
-    run_api()
+    # 4. تشغيل الدالة الرئيسية التي تحتوي على البوت والمهام الخلفية
+    main()
+
