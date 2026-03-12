@@ -1791,4 +1791,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # تشغيل بوت التليجرام في Thread
+    threading.Thread(target=lambda: asyncio.run(start_bot()), daemon=True).start()
+
+    # تشغيل FastAPI كعملية رئيسية
     run_api()
