@@ -8,7 +8,7 @@ import requests
 import numpy as np
 import pandas as pd
 
-from telegram import ReplyKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,7 +18,7 @@ from telegram.ext import (
 
 import threading
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Request
 import websockets
 
 # -------------------------
@@ -29,6 +29,24 @@ app = FastAPI()
 @app.get("/")
 def home():
     return {"status": "running"}
+
+
+# -------------------------
+# Telegram Webhook Section
+# -------------------------
+
+TOKEN = os.getenv("TOKEN_BOT")   # التوكن من البيئة
+
+# إنشاء تطبيق التليجرام
+telegram_app = Application.builder().token(TOKEN).build()
+
+# مسار الويبهوك
+@app.post("/webhook")
+async def webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return {"ok": True}
 
 def run_api():
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
