@@ -1731,37 +1731,36 @@ async def handle(update, context):
 # MAIN
 # ============================================
 
-import os
-import asyncio
-import json
-import time
-from datetime import datetime, timedelta
+def main():
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
 
-import requests
-import numpy as np
-import pandas as pd
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-from telegram import ReplyKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters
-)
+    # أوامر
+    application.add_handler(CommandHandler("start", start))
 
-import threading
-import uvicorn
-from fastapi import FastAPI, WebSocket
-import websockets
+    # رسائل نصية
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle)
+    )
 
-# -------------------------
-# FastAPI + Port for Render
-# -------------------------
-app = FastAPI()
+    # -------------------------
+    # تشغيل FastAPI في ثريد منفصل
+    # -------------------------
+    threading.Thread(target=run_api, daemon=True).start()
 
-@app.get("/")
-def home():
-    return {"status": "running"}
+    # -------------------------
+    # تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
+    # -------------------------
+    loop = asyncio.get_event_loop()
+    loop.create_task(BOOT(application))
 
-def run_api():
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # -------------------------
+    # تشغيل بوت التليجرام
+    # -------------------------
+    application.run_polling()
+
+
+if __name__ == "__main__":
+    main()
