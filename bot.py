@@ -1,972 +1,1748 @@
-from flask import Flask
-import threading
 import os
+import asyncio
+import json
 import time
-import logging
+from datetime import datetime, timedelta
+
 import requests
-import pandas as pd
 import numpy as np
-import telebot
-from telebot import types
+import pandas as pd
+
+from telegram import ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters
+)
+
+import threading
+import uvicorn
+from fastapi import FastAPI, WebSocket
+import websockets
+
+# ============================================
+# GLOBAL CONFIG
+# ============================================
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CRYPTOPANIC_API = os.getenv("CRYPTOPANIC_API")
+
+SYMBOLS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+    "ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
+    "MATICUSDT","NEARUSDT","TRXUSDT","LTCUSDT","UNIUSDT",
+    "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
+]
+
+BINANCE_APIS = [
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com"
+]
+
 session = requests.Session()
 
-# ================== منع تكرار الإرسال ==================
-LAST_SENT = {}                 # لمنع تكرار نفس الرسالة
-LAST_TRADE_SIGNATURE = {}      # لمنع تكرار نفس الصفقة الذهبية
-lock = threading.Lock()
+# كاشات عامة
+price_cache = {}
+orderbook_cache = {}
+liquidity_map = {}
+last_signal_time_manual = {}   # للصفقات اليدوية (أمر "صفقات")
+last_signal_time_auto = {}     # للصفقات الآلية (الفحص كل 10 دقائق)
 
-def can_send(key):
+klines_cache = {}
+KLINES_TTL = 60  # ثانية
+
+# Cluster Delta caches
+cluster_cache = {}          # {symbol: {"cvd": float, "last_update": ts}}
+cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask": y}}}}
+
+# ============================================
+# TELEGRAM UI
+# ============================================
+
+active_chats = set()
+
+keyboard = ReplyKeyboardMarkup(
+    [["صفقات", "تحليل"]],
+    resize_keyboard=True
+)
+
+# ============================================
+# HELPERS
+# ============================================
+
+def rr_to_str(rr: float) -> str:
+    """
+    يحوّل قيمة RR مثل 4.0 إلى نص بالشكل: 1:4.00
+    """
+    return f"1:{rr:.2f}"
+
+def format_direction_emoji(side: str) -> str:
+    """
+    يعيد 🟢 للـ Long و 🔴 للـ Short
+    """
+    return "🟢" if side.lower() == "long" else "🔴"
+
+def format_side_hashtag(side: str) -> str:
+    """
+    يعيد #Long أو #Short
+    """
+    return "#Long" if side.lower() == "long" else "#Short"
+
+# ============================================
+# MESSAGE TEMPLATES — MANUAL SIGNALS
+# (لا تغيير في الشكل إطلاقاً)
+# ============================================
+
+def format_manual_signals(signals: list) -> str:
+    """
+    تنسيق رسالة: أفضل صفقتين في السوق حالياً (يدوي — عند إرسال كلمة صفقات)
+    كل عنصر في signals هو dict يحتوي على:
+    symbol, side, entry, sl, tp, rr, prob, is_instant, reason_text
+    is_instant: True = (فوري) / False = (معلّق)
+    """
+    if not signals:
+        return (
+            "السوق متذبذب ولا توجد فرصة دخول مثالية حاليا، حاول بعد دقائق"
+        )
+
+    text = "أفضل صفقتين في السوق حاليا:\n"
+    text += "-------------------------------------------\n"
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, sig in enumerate(signals[:2]):
+        medal = medals[i] if i < len(medals) else "•"
+        symbol = sig["symbol"]
+        side = sig["side"]
+        entry = sig["entry"]
+        sl = sig["sl"]
+        tp = sig["tp"]
+        rr = sig["rr"]
+        prob = sig["prob"]
+        reason = sig.get("reason_text", "").strip()
+        is_instant = sig.get("is_instant", True)
+
+        kind = "فوري" if is_instant else "معلّق"
+        emoji = format_direction_emoji(side)
+        hashtag = format_side_hashtag(side)
+
+        text += f"{medal} {symbol} — {emoji} ({kind})\n"
+        text += f"{hashtag}\n"
+        text += f"Entry: {entry:.4f}\n"
+        text += f"SL: {sl:.4f}\n"
+        text += f"TP: {tp:.4f}\n"
+        text += f"R:R = {rr_to_str(rr)}\n"
+        text += f"نسبة النجاح المتوقعة: {prob}%\n"
+        text += "-------------------------------------------\n"
+        text += "📌 السبب: "
+        if reason:
+            text += reason + "\n"
+        else:
+            text += "توافق الإطارات الزمنية مع سلوك سعري قوي وسيولة مؤسسية واضحة.\n"
+        text += "--------------------------------\n"
+
+    # ملاحظة خاصة للصفقة المعلقة (إن وجدت)
+    if any(not s.get("is_instant", True) for s in signals[:2]):
+        text += (
+            "ستصلك رسالة تأكيد عند وصول السعر إلى المنطقة المثالية للدخول (للصفقة المعلّقة فقط).\n"
+        )
+
+    return text
+
+# ============================================
+# MESSAGE TEMPLATES — AUTO SCAN SIGNAL
+# (لا تغيير في الشكل إطلاقاً)
+# ============================================
+
+def format_auto_signal(sig: dict) -> str:
+    """
+    تنسيق رسالة الفحص الآلي:
+    ⏰ فحص آلي — فرصة جديدة
+    """
+    symbol = sig["symbol"]
+    side = sig["side"]
+    entry = sig["entry"]
+    sl = sig["sl"]
+    tp = sig["tp"]
+    rr = sig["rr"]
+    prob = sig["prob"]
+    reason = sig.get("reason_text", "").strip()
+    is_instant = sig.get("is_instant", True)
+
+    kind = "فوري" if is_instant else "معلّق"
+    emoji = format_direction_emoji(side)
+    hashtag = format_side_hashtag(side)
+
+    text = "⏰ فحص آلي — فرصة جديدة\n"
+    text += "------------------------------------------\n"
+    text += f"🎯 {symbol} — {emoji} ({kind})\n"
+    text += f"{hashtag}\n"
+    text += f"Entry: {entry:.4f}\n"
+    text += f"SL: {sl:.4f}\n"
+    text += f"TP: {tp:.4f}\n"
+    text += f"R:R = {rr_to_str(rr)}\n"
+    text += f"نسبة النجاح المتوقعة: {prob}%\n"
+    text += "------------------------------------------------\n"
+    text += "📌 السبب: "
+    if reason:
+        text += reason + "\n"
+    else:
+        text += (
+            "انفجار سعري ملحوظ مع تفاعل قوي عند مناطق عرض/طلب رئيسية "
+            "وتوافق مع اتجاه السوق العام.\n"
+        )
+    return text
+
+# ============================================
+# MESSAGE TEMPLATES — PENDING ENTRY ALERT
+# (لا تغيير في الشكل إطلاقاً)
+# ============================================
+
+def format_pending_entry_alert(symbol: str, side: str, price: float, entry: float, prob: int) -> str:
+    """
+    رسالة التذكير عند وصول السعر إلى المنطقة المثالية للدخول
+    (للصفقات المعلقة فقط)
+    """
+    text = "تذكير ... 🔔\n"
+    text += "السعر وصل إلى المنطقة المثالية للدخول، خذ نظرة و قرر\n\n"
+    text += f"{symbol}\n\n"
+    text += f"السعر الحالي: {price:.4f}\n"
+    text += f"منطقة الدخول المقترحة: {entry:.4f}\n\n"
+    text += f"الاتجاه: {'Long' if side.lower() == 'long' else 'Short'}\n"
+    text += f"نسبة النجاح المتوقعة: {prob}%\n"
+    return text
+
+# ============================================
+# MESSAGE TEMPLATES — NO SIGNAL
+# ============================================
+
+def format_no_signal() -> str:
+    return "السوق متذبذب ولا توجد فرصة دخول مثالية حاليا، حاول بعد دقائق"
+
+# ============================================
+# MESSAGE TEMPLATES — DAILY REPORT
+# (لا تغيير في الشكل إطلاقاً)
+# ============================================
+
+def format_daily_report_header(news_comment: str) -> str:
+    """
+    رأس رسالة التحليل اليومي + تعليق إخباري مترجم بالعربي
+    """
+    text = (
+        "التحليل اليومي لسوق الكريبتو حسب بيانات السوق والأخبار الواردة من موقع CryptoPanic\n"
+        "-------------------------------------------\n"
+    )
+    if news_comment:
+        text += news_comment.strip() + "\n"
+    text += "أكثر خمس عملات رقمية نشطة حاليا صعود أو هبوط حسب اتجاه السوق:\n\n"
+    return text
+
+def format_daily_coin_line(
+    rank: int,
+    symbol: str,
+    trend_1d: str,
+    trend_4h: str,
+    trend_1h: str,
+    trend_15m: str,
+    expectation: str
+) -> str:
+    """
+    تنسيق سطر تحليل عملة واحدة ضمن أفضل 5 عملات نشطة
+    """
+    text = f"{rank}) {symbol}\n"
+    text += f"📅 1D: {trend_1d}\n"
+    text += f"⏰ 4h: {trend_4h}\n"
+    text += f"🕰 1h: {trend_1h}\n"
+    text += f"🕒 15m: {trend_15m}\n"
+    text += f"📉 التوقع: {expectation}\n"
+    text += "-------------------------------------------\n\n"
+    return text
+
+def format_daily_report(news_comment: str, coins_analysis: list) -> str:
+    """
+    news_comment: نص عربي يشرح تأثير الأخبار
+    coins_analysis: قائمة من dict لكل عملة
+    """
+    text = format_daily_report_header(news_comment)
+
+    if not coins_analysis:
+        text += "لا توجد بيانات كافية لتحليل العملات النشطة حالياً.\n"
+        return text
+
+    for i, c in enumerate(coins_analysis[:5], start=1):
+        text += format_daily_coin_line(
+            i,
+            c["symbol"],
+            c["trend_1d"],
+            c["trend_4h"],
+            c["trend_1h"],
+            c["trend_15m"],
+            c["expectation"]
+        )
+
+    return text
+
+# ============================================
+# TELEGRAM COMMAND: /start
+# ============================================
+
+async def start(update, context):
+    chat_id = update.message.chat_id
+    active_chats.add(chat_id)
+
+    msg = (
+        "بوت التحليل الاحترافي جاهز ✅\n"
+        "مهمتي مساعدتك في تحليل سوق الفيوتشر واستخراج أفضل الفرص.\n\n"
+        "استخدم الأزرار بالأسفل:\n"
+        "- صفقات: لاستخراج أفضل وأقوى الفرص المتاحة الآن\n"
+        "- تحليل: للحصول على نظرة يومية عامة عن السوق"
+    )
+    await update.message.reply_text(msg, reply_markup=keyboard)
+
+# ============================================
+# FETCH KLINES WITH CACHING
+# ============================================
+
+def fetch_klines(symbol: str, interval: str, limit: int = 500):
+    """
+    جلب شموع بايننس مع كاش لمدة 60 ثانية لتخفيف الضغط.
+    """
+    key = f"{symbol}_{interval}"
     now = time.time()
-    if key in LAST_SENT:
-        if now - LAST_SENT[key] < 1800:  # نصف ساعة
-            return False
-    LAST_SENT[key] = now
-    return True
 
-def make_signature(t):
-    return f"{t['symbol']}-{t['trend']}-{t['entry']['entry_price']:.4f}-{t['sl']:.4f}-{t['tp']:.4f}"
+    if key in klines_cache:
+        cached = klines_cache[key]
+        if now - cached["time"] < KLINES_TTL:
+            return cached["data"]
 
-# ================== Flask ==================
-app = Flask(__name__)
+    for api in BINANCE_APIS:
+        try:
+            url = f"{api}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+            r = session.get(url, timeout=5)
+            data = r.json()
 
-@app.route("/")
-def home():
-    return "Bot is running"
+            df = pd.DataFrame(data, columns=[
+                "open_time","open","high","low","close","volume",
+                "close_time","qav","trades","tbbav","tbqav","ignore"
+            ])
 
-# ================== إعداد اللوج ==================
-logging.basicConfig(level=logging.CRITICAL)
+            df["open"] = df["open"].astype(float)
+            df["high"] = df["high"].astype(float)
+            df["low"] = df["low"].astype(float)
+            df["close"] = df["close"].astype(float)
+            df["volume"] = df["volume"].astype(float)
 
-# ================== البوت ==================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
+            klines_cache[key] = {"time": now, "data": df}
+            return df
 
-LAST_CHAT_ID = None
+        except Exception:
+            continue
 
-# ================== قائمة العملات ==================
-def top_20_liquid_coins():
-    return [
-        "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-        "ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
-        "MATICUSDT","NEARUSDT","TRXUSDT","LTCUSDT","UNIUSDT",
-        "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
-    ]
+    return None
 
-# ================== جلب الأخبار (CryptoPanic API) ==================
-def fetch_crypto_news():
-    try:
-        url = "https://cryptopanic.com/api/v1/posts/?auth_token=&public=true"
-        r = requests.get(url, timeout=10)
-        data = r.json()
+# ============================================
+# INDICATORS
+# ============================================
 
-        if "results" not in data:
-            return []
+def ema(series, period=200):
+    return series.ewm(span=period, adjust=False).mean()
 
-        news_list = []
-        for item in data["results"][:5]:  # آخر 5 أخبار فقط
-            title = item.get("title", "")
-            link = item.get("url", "")
-            news_list.append({"title": title, "url": link})
-
-        return news_list
-
-    except Exception as e:
-        print(f"[NEWS ERROR] فشل في جلب الأخبار: {e}")
-        return []
-
-# ================== المؤشرات الفنية (RSI) ==================
-def calc_rsi(df, period=14):
-    delta = df["c"].diff()
+def rsi(series, period=14):
+    delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
 
-    return rsi
+def atr(df, period=14):
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
 
-def rsi_filter(df, side):
-    rsi = calc_rsi(df).iloc[-1]
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
 
-    if side == "LONG" and rsi > 70:
-        return False  # تشبع شرائي
-    if side == "SHORT" and rsi < 30:
-        return False  # تشبع بيعي
+def add_indicators(df):
+    df = df.copy()
+    df["ema200"] = ema(df["close"], 200)
+    df["rsi"] = rsi(df["close"], 14)
+    df["atr"] = atr(df, 14)
+    return df
 
-    return True
+# ============================================
+# CRYPTOPANIC NEWS (RAW)
+# ============================================
 
-def data_ok(df, min_len=80):
-    """التأكد من أن البيانات ليست فارغة وكافية للحسابات"""
-    return df is not None and len(df) >= min_len
+def fetch_crypto_news_raw():
+    """
+    جلب آخر الأخبار من CryptoPanic (بالإنجليزي).
+    """
+    if not CRYPTOPANIC_API:
+        return []
 
-def fetch_funding_rate(symbol):
-    """جلب رسوم التمويل من Binance API"""
     try:
-        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        r = requests.get(url, params={"symbol": symbol}, timeout=10)
-        return float(r.json().get("lastFundingRate", 0))
+        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API}&public=true"
+        r = session.get(url, timeout=10)
+        data = r.json().get("results", [])
+        return data[:5]
     except:
-        return 0
+        return []
 
-# ================== جلب البيانات ==================
-# جلسة اتصال ثابتة مع Binance
-session = requests.Session()
+# ============================================
+# TRANSLATE NEWS TO ARABIC (تلخيصي)
+# ============================================
 
-def fetch_klines(symbol, interval="1h", limit=200):
-    urls = [
-        "https://fapi.binance.com/fapi/v1/klines",
-        "https://fapi1.binance.com/fapi/v1/klines",
-        "https://fapi2.binance.com/fapi/v1/klines"
-    ]
+def translate_to_arabic(text: str) -> str:
+    """
+    ترجمة بسيطة بدون API خارجي — تحويل الإنجليزية إلى عربية بأسلوب تلخيصي.
+    ليست ترجمة حرفية، بل إعادة صياغة عربية مفهومة.
+    """
+    text = text.lower()
 
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    # كلمات مفتاحية إيجابية
+    if any(w in text for w in ["bull", "adoption", "growth", "etf", "approval"]):
+        return "الأخبار تشير إلى تحسن في شهية المخاطرة وزيادة اهتمام المؤسسات بالسوق."
 
-    for url in urls:
-        for attempt in range(3):  # إعادة المحاولة 3 مرات
-            try:
-                r = session.get(url, params=params, timeout=10)
-                data = r.json()
+    # كلمات مفتاحية سلبية
+    if any(w in text for w in ["hack", "ban", "lawsuit", "crash", "fear"]):
+        return "الأخبار تحمل طابعًا سلبيًا وقد تضغط على حركة السوق مؤقتًا."
 
-                # خطأ من Binance API
-                if isinstance(data, dict) and data.get("code"):
-                    print(f"[API ERROR] Binance error for {symbol} {interval}: {data}")
-                    time.sleep(0.3)
-                    continue
+    # كلمات محايدة
+    if any(w in text for w in ["update", "upgrade", "announcement"]):
+        return "هناك تحديثات تقنية وأخبار محايدة قد تؤثر بشكل محدود على حركة السوق."
 
-                # تحويل البيانات إلى DataFrame
-                df = pd.DataFrame(data, columns=[
-                    "t","o","h","l","c","v","ct","qv","n","tbb","tbq","i"
-                ])
-                df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
+    # fallback
+    return "خبر عام متعلق بالسوق دون تأثير واضح."
 
-                return df[["o","h","l","c","v"]]
+# ============================================
+# NEWS ANALYSIS (ARABIC SUMMARY)
+# ============================================
 
-            except Exception as e:
-                print(f"[API ERROR] محاولة {attempt+1} لجلب {symbol} — {interval} فشلت: {e}")
-                time.sleep(0.3)
-                continue
+def analyze_news_arabic():
+    """
+    يعيد تعليق عربي احترافي عن حالة الأخبار.
+    """
+    raw_news = fetch_crypto_news_raw()
+    if not raw_news:
+        return "لا توجد أخبار مؤثرة حالياً."
 
-    return None
+    comments = []
+    for n in raw_news:
+        title = n.get("title", "")
+        translated = translate_to_arabic(title)
+        comments.append(translated)
 
-# ================== أدوات التحليل ==================
-def calc_candle_features(df):
-    o = df["o"]; h = df["h"]; l = df["l"]; c = df["c"]
-    body = (c - o).abs()
-    upper = h - np.maximum(o, c)
-    lower = np.minimum(o, c) - l
-    return body, upper, lower
+    if not comments:
+        return "لا توجد أخبار مؤثرة حالياً."
 
-def detect_trend(df, lookback=50):
-    df = df.iloc[-lookback:]
-    highs = df["h"]; lows = df["l"]
+    positive = sum("تحسن" in c or "زيادة" in c for c in comments)
+    negative = sum("سلبي" in c or "تضغط" in c for c in comments)
 
-    if highs.iloc[-1] > highs.mean() and lows.iloc[-1] > lows.mean():
-        trend = "bull"
-    elif highs.iloc[-1] < highs.mean() and lows.iloc[-1] < lows.mean():
-        trend = "bear"
+    if positive > negative:
+        summary = "تفيد آخر الأخبار بأن السوق يميل إلى الإيجابية مع دخول سيولة مؤسسية."
+    elif negative > positive:
+        summary = "تفيد آخر الأخبار بأن السوق يواجه ضغوطًا بسبب أخبار سلبية."
     else:
-        trend = "side"
+        summary = "الأخبار محايدة وتأثيرها محدود على حركة السوق."
 
-    last5 = df.iloc[-5:]
-    body, _, _ = calc_candle_features(last5)
-    momentum = "strong" if body.mean() > (df["c"] - df["o"]).abs().mean() else "weak"
+    return summary
 
-    desc = ("اتجاه صاعد" if trend=="bull" else "اتجاه هابط" if trend=="bear" else "اتجاه جانبي")
-    desc += " + زخم قوي" if momentum=="strong" else " + زخم ضعيف"
+# ============================================
+# TOP 5 ACTIVE COINS (VOLUME + MOVEMENT)
+# ============================================
 
-    return trend, momentum, desc
+def get_top5_active():
+    """
+    اختيار أكثر 5 عملات نشاطًا (حركة + سيولة).
+    """
+    ranking = []
 
-def calc_percent_metrics(df):
-    close_last = df["c"].iloc[-1]
-    close_24 = df["c"].iloc[-24] if len(df) >= 24 else df["c"].iloc[0]
-    change_24 = (close_last - close_24) / close_24 * 100 if close_24 else 0
+    for s in SYMBOLS:
+        df = fetch_klines(s, "1h", 50)
+        if df is None or len(df) < 20:
+            continue
 
-    close_prev = df["c"].iloc[-2] if len(df) >= 2 else df["c"].iloc[0]
-    change_1h = (close_last - close_prev) / close_prev * 100 if close_prev else 0
+        move = abs(df["close"].iloc[-1] - df["close"].iloc[-10])
+        vol = df["volume"].iloc[-1]
+        score = move * vol
 
-    low = df["l"].min(); high = df["h"].max()
-    pos = (close_last - low) / (high - low) * 100 if high != low else 50
+        ranking.append((s, score))
 
-    return change_1h, change_24, pos
+    ranking = sorted(ranking, key=lambda x: x[1], reverse=True)
+    return [x[0] for x in ranking[:5]]
 
-def calc_atr(df, period=14):
-    high = df["h"]; low = df["l"]; close = df["c"]
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(period).mean()
-    return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else tr.mean()
+# ============================================
+# MULTI TIMEFRAME LOADER
+# ============================================
 
-def avg_volume(df, period=50):
-    if df is None or len(df) < period:
+def load_timeframes(symbol: str):
+    df1d = fetch_klines(symbol, "1d", 300)
+    df4h = fetch_klines(symbol, "4h", 300)
+    df1h = fetch_klines(symbol, "1h", 300)
+    df15 = fetch_klines(symbol, "15m", 300)
+
+    if df1d is None or df4h is None or df1h is None or df15 is None:
         return None
-    return df["v"].iloc[-period:].mean()
 
-# FVG مبسط على فريم الساعة
-def detect_fvg_1h(df):
-    # نموذج 3 شموع: الشمعة 1 – 2 – 3
-    if len(df) < 3:
-        return False
+    df1d = add_indicators(df1d)
+    df4h = add_indicators(df4h)
+    df1h = add_indicators(df1h)
+    df15 = add_indicators(df15)
 
-    h1 = df["h"].iloc[-3]
-    l1 = df["l"].iloc[-3]
-    h2 = df["h"].iloc[-2]
-    l2 = df["l"].iloc[-2]
-    h3 = df["h"].iloc[-1]
-    l3 = df["l"].iloc[-1]
+    return df1d, df4h, df1h, df15
 
-    # FVG صاعد
-    bullish_fvg = l3 > h1 and l2 > h1
+# ============================================
+# TREND FILTERS
+# ============================================
 
-    # FVG هابط
-    bearish_fvg = h3 < l1 and h2 < l1
-
-    return bullish_fvg or bearish_fvg
-
-# ================== فلاتر إضافية متقدمة (FVG + OB + Liquidity) ==================
-def check_fvg_risk(df, entry_price, trend):
+def trend_filter(df):
     """
-    يتحقق إذا كان هناك FVG قريب قد يرجّع السعر ويضرب الستوب.
-    فلتر متوسط القوة.
-    """
-    if len(df) < 10:
-        return False
-
-    last3 = df.iloc[-3:]
-    h1, l1 = last3["h"].iloc[0], last3["l"].iloc[0]
-    h3, l3 = last3["h"].iloc[2], last3["l"].iloc[2]
-
-    if trend == "bull":
-        # إذا كان الدخول داخل منطقة فجوة محتملة تحت السعر
-        if l3 < entry_price < h1:
-            return True
-
-    if trend == "bear":
-        # إذا كان الدخول داخل منطقة فجوة محتملة فوق السعر
-        if l1 < entry_price < h3:
-            return True
-
-    return False
-
-def check_order_block(df, entry_price, trend):
-    """
-    يتحقق إذا كان الدخول قريب من Order Block قوي.
-    فلتر أقوى قليلاً، يركز على آخر 20 شمعة.
+    اتجاه بسيط: مقارنة السعر مع EMA200 + ميل المتوسط.
     """
     if len(df) < 20:
-        return False
+        return "sideways"
 
-    last20 = df.iloc[-20:]
-    rng = last20["h"].max() - last20["l"].min()
-    if rng == 0:
-        return False
+    close = df["close"].iloc[-1]
+    ema200 = df["ema200"].iloc[-1]
+    ema_prev = df["ema200"].iloc[-10]
 
-    threshold = rng * 0.12  # مسافة قريبة نسبيًا
+    if close > ema200 and ema200 > ema_prev:
+        return "bullish"
+    if close < ema200 and ema200 < ema_prev:
+        return "bearish"
+    return "sideways"
 
-    if trend == "bull":
-        ob_low = last20["l"].min()
-        if abs(entry_price - ob_low) <= threshold:
-            return True
+# ============================================
+# RSI DIVERGENCE (BASIC)
+# ============================================
 
-    if trend == "bear":
-        ob_high = last20["h"].max()
-        if abs(entry_price - ob_high) <= threshold:
-            return True
-
-    return False
-
-def check_liquidity_cluster(df, entry_price):
+def rsi_divergence(df):
     """
-    يتحقق إذا كان الدخول قريب من منطقة سيولة مزدحمة (كلاستر).
-    فلتر متوسط، يمنع الدخول في قلب الكلاستر.
+    دايفرجنس بسيط بين السعر و RSI على آخر 30 شمعة.
     """
-    if len(df) < 30:
-        return False
-
-    last30 = df.iloc[-30:]
-    cluster_low = last30["l"].mean()
-    cluster_high = last30["h"].mean()
-
-    # إذا كان الدخول داخل نطاق الكلاستر المتوسط
-    if cluster_low <= entry_price <= cluster_high:
-        return True
-
-    return False
-
-def extra_filters(df15, entry_price, trend):
-    """
-    يجمع كل الفلاتر الإضافية.
-    يرجع True إذا الصفقة خطيرة ويجب رفضها.
-    """
-    # خطر FVG قريب
-    if check_fvg_risk(df15, entry_price, trend):
-        return True
-
-    # خطر Order Block قريب
-    if check_order_block(df15, entry_price, trend):
-        return True
-
-    # خطر Liquidity Cluster
-    if check_liquidity_cluster(df15, entry_price):
-        return True
-
-    return False
-
-# ================== تحليل 1D ==================
-def analyze_symbol_1d(symbol):
-    df = fetch_klines(symbol, "1d", 200)
-    if not data_ok(df, 120):
+    if len(df) < 15:
         return None
 
-    trend, momentum, desc = detect_trend(df)
-    ch1, ch24, pos = calc_percent_metrics(df)
-    atr = calc_atr(df, period=14)
+    closes = df["close"]
+    rsi_vals = df["rsi"]
 
-    # تقدير Premium / Discount من موقع السعر داخل الرينج اليومي
-    zone = "neutral"
-    if pos > 70:
-        zone = "premium"
-    elif pos < 30:
-        zone = "discount"
+    price_high1 = closes.iloc[-10]
+    price_high2 = closes.iloc[-3]
+    rsi_high1 = rsi_vals.iloc[-10]
+    rsi_high2 = rsi_vals.iloc[-3]
 
-    return {
-        "trend_1d": trend,
-        "momentum_1d": momentum,
-        "desc_1d": desc,
-        "pos_1d": pos,
-        "zone_1d": zone,
-        "atr_1d": atr
-    }
+    price_low1 = closes.iloc[-10]
+    price_low2 = closes.iloc[-3]
+    rsi_low1 = rsi_vals.iloc[-10]
+    rsi_low2 = rsi_vals.iloc[-3]
 
-# ================== تحليل 1h ==================
-def analyze_symbol_1h(symbol):
-    df = fetch_klines(symbol, "1h", 200)
-    if not data_ok(df, 120):
-        return None
+    # دايفرجنس بيعي: السعر يصعد و RSI يهبط
+    if price_high2 > price_high1 and rsi_high2 < rsi_high1:
+        return "bearish"
 
-    trend, momentum, desc = detect_trend(df)
-    ch1, ch24, pos = calc_percent_metrics(df)
-    atr = calc_atr(df, period=14)
-    fvg = detect_fvg_1h(df)
-    vol_avg = avg_volume(df, 50)
-    vol_last = df["v"].iloc[-1]
-    funding = fetch_funding_rate(symbol)
-
-    return {
-        "symbol": symbol,
-        "trend": trend,
-        "momentum": momentum,
-        "description": desc,
-        "last_price": df["c"].iloc[-1],
-        "change_1h": ch1,
-        "change_24h": ch24,
-        "pos_range": pos,
-        "atr_1h": atr,
-        "has_fvg": fvg,
-        "funding": funding,
-        "vol_avg": vol_avg,
-        "vol_last": vol_last
-    }
-
-# ================== تحليل 4h ==================
-def analyze_symbol_4h(symbol):
-    df = fetch_klines(symbol, "4h", 200)
-    if not data_ok(df, 80):
-        return None
-
-    trend, momentum, desc = detect_trend(df)
-
-    return {
-        "trend_4h": trend,
-        "momentum_4h": momentum,
-        "desc_4h": desc
-    }
-
-# ================== دخول 15m ==================
-def detect_entry_15m(df, trend):
-    last = df.iloc[-5:]
-    body, upper, lower = calc_candle_features(last)
-
-    vol_avg = avg_volume(df, 50)
-    if vol_avg is None:
-        return None
-
-    for i in range(4, -1, -1):
-
-        # دخول شراء (bullish)
-        if (
-            trend == "bull"
-            and lower.iloc[i] > body.iloc[i] * 1.5
-            and last["c"].iloc[i] > last["o"].iloc[i]
-            and last["v"].iloc[i] > vol_avg * 0.7
-        ):
-            return {
-                "type": "long",
-                "entry_type": "فوري",
-                "entry_price": last["c"].iloc[i],
-                "reason": "شمعة رفض هبوط على 15m"
-            }
-
-        # دخول بيع (bearish)
-        if (
-            trend == "bear"
-            and upper.iloc[i] > body.iloc[i] * 1.5
-            and last["c"].iloc[i] < last["o"].iloc[i]
-            and last["v"].iloc[i] > vol_avg * 0.7
-        ):
-            return {
-                "type": "short",
-                "entry_type": "فوري",
-                "entry_price": last["c"].iloc[i],
-                "reason": "شمعة رفض صعود على 15m"
-            }
+    # دايفرجنس شرائي: السعر يهبط و RSI يصعد
+    if price_low2 < price_low1 and rsi_low2 > rsi_low1:
+        return "bullish"
 
     return None
 
-# ================== تنسيق ==================
-def fmt_price(x):
-    return f"{x:.4f}"
+# ============================================
+# FIBONACCI LEVELS
+# ============================================
 
-def fmt_pct(x):
-    return f"{x:.2f}%"
+def fib_levels(high_price, low_price):
+    diff = high_price - low_price
+    return {
+        "0.236": low_price + diff * 0.236,
+        "0.382": low_price + diff * 0.382,
+        "0.5": low_price + diff * 0.5,
+        "0.618": low_price + diff * 0.618,
+        "0.786": low_price + diff * 0.786,
+    }
 
-# ================== حساب نسبة النجاح المتوقعة ==================
-def calc_success_prob(t):
+def detect_swing_points(df, lookback=5):
+    """
+    اكتشاف قمم وقيعان بسيطة لاستخدامها في فيبوناتشي و SMC.
+    """
+    highs = df["high"]
+    lows = df["low"]
+
+    swing_highs = []
+    swing_lows = []
+
+    for i in range(lookback, len(df) - lookback):
+        window_high = highs.iloc[i - lookback:i + lookback + 1]
+        window_low = lows.iloc[i - lookback:i + lookback + 1]
+
+        if highs.iloc[i] == window_high.max():
+            swing_highs.append(i)
+        if lows.iloc[i] == window_low.min():
+            swing_lows.append(i)
+
+    return swing_highs, swing_lows
+
+def fib_zone_score(df, side: str):
+    """
+    يعطي نقاط إذا السعر قريب من مناطق فيبو الانعكاسية.
+    للشراء نفضّل 0.5 - 0.618 - 0.786 من قاع إلى قمة.
+    للبيع نفضّل 0.5 - 0.618 - 0.786 من قمة إلى قاع.
+    """
+    if len(df) < 100:
+        return 0
+
+    high_price = df["high"].rolling(100).max().iloc[-1]
+    low_price = df["low"].rolling(100).min().iloc[-1]
+    price = df["close"].iloc[-1]
+
+    if side == "long":
+        fibs = fib_levels(low_price, high_price)  # من قاع إلى قمة
+    else:
+        fibs = fib_levels(high_price, low_price)  # من قمة إلى قاع
+
     score = 0
+    for lvl_name, lvl_price in fibs.items():
+        diff = abs(price - lvl_price) / max(lvl_price, 1e-8)
+        if diff < 0.005:  # قريب جداً من مستوى مهم
+            score += 2
+        elif diff < 0.01:
+            score += 1
 
-    rr = t["rr"]
-
-    # R:R
-    if rr >= 2.5:
-        score += 30
-    if rr >= 3.5:
-        score += 10
-    if rr >= 5:
-        score += 10
-    if rr >= 7:
-        score += 5
-
-    # توافق الاتجاه بين 1D و 4H و 1H
-    if t["trend_1d"] == t["trend_4h"] == t["trend"]:
-        score += 25
-    elif t["trend_1d"] == t["trend_4h"] or t["trend_1d"] == t["trend"]:
-        score += 15
-
-    # الزخم
-    if t["momentum"] == "strong":
-        score += 10
-    if t["momentum_4h"] == "strong":
-        score += 10
-    if t["momentum_1d"] == "strong":
-        score += 10
-
-    # موقع السعر داخل الرينج
-    pos = t["pos_range"]
-    if 30 <= pos <= 70:
-        score += 10
-    elif 20 <= pos < 30 or 70 < pos <= 80:
-        score += 5
-
-    # FVG على الساعة
-    if t.get("has_fvg_1h"):
-        score += 5
-
-    # Premium / Discount من اليومي
-    if t["trend_1d"] == "bull" and t["zone_1d"] == "discount":
-        score += 10
-    if t["trend_1d"] == "bear" and t["zone_1d"] == "premium":
-        score += 10
-
-    # تأثير الـ Funding Rate
-    if "funding" in t:
-        f = t["funding"]
-        if t["trend"] == "bull" and f < -0.0005:
-            score -= 10
-        if t["trend"] == "bear" and f > 0.0005:
-            score -= 10
-
-    # تأثير الحجم
-    if "vol_avg" in t and "vol_last" in t:
-        if t["vol_last"] < t["vol_avg"] * 0.6:
-            score -= 10
-
-    # ضبط النتيجة بين 50 و 95
-    score = max(50, min(95, score))
     return score
 
-# ================== اختيار R:R ديناميكي ==================
-def choose_rr(info1, info4, info1d):
-    base = 2.5
-    rr = base
+# ============================================
+# SIMPLE ELLIOTT PHASE (APPROX)
+# ============================================
 
-    # توافق الاتجاه بين 1D و 4H و 1H
-    if (
-        info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]
-        and info1["momentum"] == "strong"
-        and info4["momentum_4h"] == "strong"
-        and info1d["momentum_1d"] == "strong"
-    ):
-        rr = 5.0
+def elliott_phase(df):
+    """
+    تقدير بسيط لمرحلة الحركة (دافعة / تصحيحية) بناءً على الزخم والتذبذب.
+    """
+    if len(df) < 50:
+        return "neutral"
 
-    elif info1d["trend_1d"] == info4["trend_4h"] == info1["trend"]:
-        rr = 4.0
+    closes = df["close"]
+    recent = closes.iloc[-40:]
+    ret = recent.pct_change().dropna()
 
-    elif (
-        info1d["trend_1d"] == info4["trend_4h"]
-        or info1d["trend_1d"] == info1["trend"]
-    ):
-        rr = 3.0
+    vol = ret.std()
+    direction = recent.iloc[-1] - recent.iloc[0]
 
-    # إذا الحركة اليومية قوية في اتجاه الترند
-    if info1d["trend_1d"] == "bull" and info1["change_24h"] > 5:
-        rr = max(rr, 4.0)
+    if vol > 0.02 and abs(direction) > abs(recent.mean()) * 0.5:
+        return "impulsive"  # موجة دافعة قوية
+    if vol < 0.01:
+        return "corrective"  # تصحيح هادئ
+    return "neutral"
 
-    if info1d["trend_1d"] == "bear" and info1["change_24h"] < -5:
-        rr = max(rr, 4.0)
+# ============================================
+# ORDERBOOK & LIQUIDITY (BASIC SCORES)
+# ============================================
 
-    return min(max(rr, 2.5), 7.0)
+def orderbook_imbalance(symbol: str):
+    """
+    يرجع قيمة تقريبية لعدم توازن الطلب/العرض من الكاش.
+    """
+    ob = orderbook_cache.get(symbol)
+    if not ob:
+        return 0
 
-# ================== أفضل الصفقات ==================
-def find_best_trades(symbols):
-    results = []
+    bids = ob.get("bids", [])
+    asks = ob.get("asks", [])
 
-    for sym in symbols:
+    bid_vol = sum(b[1] for b in bids[:10]) if bids else 0
+    ask_vol = sum(a[1] for a in asks[:10]) if asks else 0
 
-        # تحليل اليومي
-        info1d = analyze_symbol_1d(sym)
-        if not info1d:
-            continue
+    if bid_vol + ask_vol == 0:
+        return 0
 
-        # تحليل الساعة
-        info1 = analyze_symbol_1h(sym)
-        if not info1:
-            continue
+    imbalance = (bid_vol - ask_vol) / (bid_vol + ask_vol)
 
-        # تحليل الأربع ساعات
-        info4 = analyze_symbol_4h(sym)
-        if not info4:
-            continue
+    if imbalance > 0.25:
+        return 3
+    if imbalance > 0.1:
+        return 2
+    if imbalance > 0.03:
+        return 1
+    if imbalance < -0.25:
+        return -3
+    if imbalance < -0.1:
+        return -2
+    if imbalance < -0.03:
+        return -1
+    return 0
 
-        # شرط الاتجاه: لا ندخل عكس الاتجاه اليومي
-        if (
-            info1["trend"] != info1d["trend_1d"]
-            or info4["trend_4h"] != info1d["trend_1d"]
-        ):
-            continue
+def liquidity_heatmap_score(symbol: str):
+    """
+    درجة تقريبية لقرب السعر من مناطق سيولة قوية.
+    """
+    lm = liquidity_map.get(symbol)
+    if not lm:
+        return 0
 
-        # بيانات 15 دقيقة
-        df15 = fetch_klines(sym, "15m", 200)
-        if not data_ok(df15, 80):
-            continue
+    price = price_cache.get(symbol)
+    if not price:
+        return 0
 
-        entry = detect_entry_15m(df15, info1["trend"])
-        if not entry:
-            continue
+    best_score = 0
+    for lvl in lm.get("levels", []):
+        lvl_price = lvl.get("price")
+        lvl_side = lvl.get("side")  # "buy" أو "sell"
+        lvl_liq = lvl.get("liq", 0)
 
-        ep = entry["entry_price"]
+        if lvl_price and lvl_liq > 0:
+            diff = abs(price - lvl_price) / max(lvl_price, 1e-8)
+            if diff < 0.003:  # قريب جداً من مستوى سيولة
+                if lvl_side == "buy":
+                    best_score += 2
+                elif lvl_side == "sell":
+                    best_score -= 2
+            elif diff < 0.01:
+                if lvl_side == "buy":
+                    best_score += 1
+                elif lvl_side == "sell":
+                    best_score -= 1
 
-        # فلاتر إضافية متقدمة (FVG + OB + Liquidity)
-        if extra_filters(df15, ep, info1["trend"]):
-            continue
+    return best_score
 
-        # ATR آمن من فريم الساعة
-        atr = info1["atr_1h"]
-        if atr is None or atr <= 0:
-            continue
+# ============================================
+# MARKET MAKER MODEL (PREMIUM / DISCOUNT)
+# ============================================
 
-        # اختيار R:R ديناميكي
-        rr = choose_rr(info1, info4, info1d)
-        if rr < 2.5:
-            continue
+def market_maker_model(df):
+    """
+    تقسيم بسيط للسعر بالنسبة للمدى الأخير:
+    Premium / Discount / Equilibrium
+    """
+    if len(df) < 200:
+        return "equilibrium"
 
-        # ============================
-        # فلتر RSI
-        # ============================
-        df_rsi = fetch_klines(sym, "1h", 200)
-        if df_rsi is None or not data_ok(df_rsi):
-            continue
+    high_price = df["high"].rolling(200).max().iloc[-1]
+    low_price = df["low"].rolling(200).min().iloc[-1]
+    price = df["close"].iloc[-1]
 
-        side = "LONG" if info1["trend"] == "bull" else "SHORT"
-        if not rsi_filter(df_rsi, side):
-            continue
-        # ============================
+    mid = (high_price + low_price) / 2
 
-        # ============================
-        # فلتر الأخبار (الجزء الثالث)
-        # ============================
-        news = fetch_crypto_news()
-        if news:
-            bad_news = [n for n in news if sym.replace("USDT", "") in n["title"].upper()]
-            if len(bad_news) > 0:
-                print(f"[NEWS FILTER] تم استبعاد {sym} بسبب أخبار قوية: {bad_news[0]['title']}")
-                continue
-        # ============================
+    if price > mid * 1.02:
+        return "premium"
+    if price < mid * 0.98:
+        return "discount"
+    return "equilibrium"
 
-        # حساب SL و TP
-        if info1["trend"] == "bull":
-            sl = ep - 1.5 * atr
-            tp = ep + rr * 1.5 * atr
+# ============================================
+# FVG DETECTION (1H / 4H)
+# ============================================
+
+def detect_fvg(df, min_body_ratio=0.6):
+    """
+    اكتشاف FVG بسيط:
+    - فجوة بين شمعتين متتاليتين
+    - جسم شمعة قوي
+    يعاد: قائمة من dict فيها:
+      {"index": i, "direction": "bullish"/"bearish"}
+    """
+    fvg_list = []
+    if len(df) < 5:
+        return fvg_list
+
+    o = df["open"]
+    h = df["high"]
+    l = df["low"]
+    c = df["close"]
+
+    for i in range(2, len(df)):
+        # فجوة صاعدة: قاع الشمعة الحالية أعلى من قمة الشمعة السابقة
+        if l.iloc[i] > h.iloc[i - 1]:
+            body = abs(c.iloc[i] - o.iloc[i])
+            rng = h.iloc[i] - l.iloc[i]
+            if rng > 0 and body / rng >= min_body_ratio:
+                fvg_list.append({"index": i, "direction": "bullish"})
+
+        # فجوة هابطة: قمة الشمعة الحالية أسفل من قاع الشمعة السابقة
+        if h.iloc[i] < l.iloc[i - 1]:
+            body = abs(c.iloc[i] - o.iloc[i])
+            rng = h.iloc[i] - l.iloc[i]
+            if rng > 0 and body / rng >= min_body_ratio:
+                fvg_list.append({"index": i, "direction": "bearish"})
+
+    return fvg_list
+
+def fvg_score(df, side: str):
+    """
+    يعطي نقاط بناءً على وجود FVG حديثة تدعم الاتجاه.
+    """
+    fvgs = detect_fvg(df)
+    if not fvgs:
+        return 0
+
+    last_fvg = fvgs[-1]
+    direction = last_fvg["direction"]
+
+    if side == "long" and direction == "bullish":
+        return 2
+    if side == "short" and direction == "bearish":
+        return 2
+    return 0
+
+# ============================================
+# SMC SCORE (محسّن)
+# ============================================
+
+def smc_score(df1h):
+    """
+    تقدير نقاط SMC على فريم الساعة:
+    - BOS / CHOCH
+    - FVG
+    - Sweeps
+    - هيكل HH/HL/LH/LL
+    """
+    if len(df1h) < 60:
+        return 0
+
+    score = 0
+    closes = df1h["close"]
+    highs = df1h["high"]
+    lows = df1h["low"]
+    opens = df1h["open"]
+
+    # BOS / CHOCH بسيط: اختراق قمة/قاع آخر 20 شمعة
+    recent_high = highs.rolling(20).max().iloc[-2]
+    recent_low = lows.rolling(20).min().iloc[-2]
+    last_close = closes.iloc[-1]
+
+    if last_close > recent_high:
+        score += 3  # BOS up قوي
+    if last_close < recent_low:
+        score -= 3  # BOS down قوي
+
+    # Sweeps: كسر قمة/قاع ثم إغلاق عكسي
+    high_prev = highs.iloc[-2]
+    low_prev = lows.iloc[-2]
+    high_curr = highs.iloc[-1]
+    low_curr = lows.iloc[-1]
+    close_curr = closes.iloc[-1]
+
+    # Sweep sell-side (كسر قاع ثم إغلاق فوقه)
+    if low_curr < low_prev and close_curr > low_prev:
+        score += 2
+
+    # Sweep buy-side (كسر قمة ثم إغلاق تحتها)
+    if high_curr > high_prev and close_curr < high_prev:
+        score -= 2
+
+    # FVG على فريم الساعة
+    fvg_1h = fvg_score(df1h, "long" if last_close > recent_high else "short")
+    score += fvg_1h
+
+    # هيكل HH/HL/LH/LL بسيط
+    swing_highs, swing_lows = detect_swing_points(df1h, lookback=3)
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        last_sh1 = swing_highs[-1]
+        last_sh2 = swing_highs[-2]
+        last_sl1 = swing_lows[-1]
+        last_sl2 = swing_lows[-2]
+
+        # اتجاه صاعد: HH + HL
+        if highs.iloc[last_sh1] > highs.iloc[last_sh2] and lows.iloc[last_sl1] > lows.iloc[last_sl2]:
+            score += 2
+        # اتجاه هابط: LH + LL
+        if highs.iloc[last_sh1] < highs.iloc[last_sh2] and lows.iloc[last_sl1] < lows.iloc[last_sl2]:
+            score -= 2
+
+    return score
+
+# ============================================
+# CLASSIC CANDLE / MOMENTUM SCORE
+# ============================================
+
+def classic_candle_score(df15):
+    """
+    تقييم بسيط للشموع على فريم التنفيذ (15m):
+    - شموع ابتلاعية
+    - شموع انعكاسية
+    - زخم
+    """
+    if len(df15) < 5:
+        return 0
+
+    o = df15["open"].iloc[-1]
+    c = df15["close"].iloc[-1]
+    h = df15["high"].iloc[-1]
+    l = df15["low"].iloc[-1]
+
+    body = abs(c - o)
+    range_ = h - l
+    if range_ == 0:
+        return 0
+
+    body_ratio = body / range_
+
+    score = 0
+
+    # شمعة ابتلاعية قوية
+    prev_o = df15["open"].iloc[-2]
+    prev_c = df15["close"].iloc[-2]
+    prev_body = abs(prev_c - prev_o)
+
+    if body > prev_body * 1.5 and body_ratio > 0.6:
+        if c > o:
+            score += 2  # ابتلاعية صاعدة
         else:
-            sl = ep + 1.5 * atr
-            tp = ep - rr * 1.5 * atr
+            score -= 2  # ابتلاعية هابطة
 
-        # التأكد من أن نقطة الدخول بين SL و TP
-        if (info1["trend"] == "bull" and not (sl < ep < tp)) or \
-           (info1["trend"] == "bear" and not (tp < ep < sl)):
-            continue
+    # شمعة ذات ذيل طويل (رفض سعري)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
 
-        real_rr = abs((tp - ep) / (ep - sl))
-        if real_rr < 2.5:
-            continue
+    if lower_wick > body * 1.5:
+        score += 1  # رفض هبوط (إيجابي)
+    if upper_wick > body * 1.5:
+        score -= 1  # رفض صعود (سلبي)
 
-        # حساب نسبة النجاح
-        success = calc_success_prob({
-            "rr": real_rr,
-            "trend": info1["trend"],
-            "trend_4h": info4["trend_4h"],
-            "trend_1d": info1d["trend_1d"],
-            "momentum": info1["momentum"],
-            "momentum_4h": info4["momentum_4h"],
-            "momentum_1d": info1d["momentum_1d"],
-            "pos_range": info1["pos_range"],
-            "has_fvg_1h": info1["has_fvg"],
-            "zone_1d": info1d["zone_1d"],
-            "funding": info1["funding"],
-            "vol_avg": info1["vol_avg"],
-            "vol_last": info1["vol_last"]
-        })
+    return score
 
-        # فلتر نسبة النجاح
-        if success < 70:
-            continue
+# ============================================
+# TRADE LEVELS + RR
+# ============================================
 
-        # تخزين نسبة النجاح داخل الصفقة
-        t_success = success
+def trade_levels(price, atr_val, side):
+    if atr_val is None or np.isnan(atr_val) or atr_val == 0:
+        return None, None, None, None
 
-        # صفقة معلقة بانحراف 1%
-        if info1["trend"] == "bull":
-            pending_price = ep * 0.99  # شراء من أسفل 1%
-        else:
-            pending_price = ep * 1.01  # بيع من أعلى 1%
+    # استخدام ATR أكثر تحفظاً
+    risk_mult = 1.8
+    reward_mult = 4.5
 
-        pending_entry = {
-            "entry_type": "معلق",
-            "entry_price": pending_price,
-            "reason": entry["reason"] + " (انحراف 1%)"
-        }
+    if side == "long":
+        entry = price
+        sl = price - atr_val * risk_mult
+        tp = price + atr_val * reward_mult
+        rr = (tp - entry) / max(entry - sl, 1e-8)
+    else:
+        entry = price
+        sl = price + atr_val * risk_mult
+        tp = price - atr_val * reward_mult
+        rr = (entry - tp) / max(sl - entry, 1e-8)
 
-        results.append({
-            "symbol": sym,
-            "trend": info1["trend"],
-            "trend_4h": info4["trend_4h"],
-            "trend_1d": info1d["trend_1d"],
-            "momentum": info1["momentum"],
-            "momentum_4h": info4["momentum_4h"],
-            "momentum_1d": info1d["momentum_1d"],
-            "entry": entry,                 # دخول فوري
-            "pending_entry": pending_entry, # دخول معلق
-            "sl": sl,
-            "tp": tp,
-            "rr": real_rr,
-            "change_1h": info1["change_1h"],
-            "change_24h": info1["change_24h"],
-            "pos_range": info1["pos_range"],
-            "has_fvg_1h": info1["has_fvg"],
-            "zone_1d": info1d["zone_1d"],
-            "funding": info1["funding"],
-            "vol_avg": info1["vol_avg"],
-            "vol_last": info1["vol_last"],
-            "last_price": info1["last_price"],
-            "success": t_success
-        })
+    return entry, sl, tp, rr
 
-        time.sleep(0.05)
+# ============================================
+# PROBABILITY ENGINE
+# ============================================
 
-    results = sorted(results, key=lambda x: x["rr"], reverse=True)
-    return results[:2]
+def probability_score(score):
+    """
+    تحويل مجموع النقاط إلى نسبة نجاح تقريبية.
+    """
+    base = 65
+    prob = base + abs(score) * 2.5
+    if prob > 96:
+        prob = 96
+    if prob < 60:
+        prob = 60
+    return int(prob)
 
-# ================== تحليل السوق ==================
-def analyze_top_coins(symbols):
-    out = []
-    for sym in symbols:
-        info1d = analyze_symbol_1d(sym)
-        info1 = analyze_symbol_1h(sym)
-        info4 = analyze_symbol_4h(sym)
-        if info1d and info1 and info4:
-            score = 0
-            score += abs(info1["change_24h"])
-            if info1["momentum"]=="strong":
-                score += 5
-            if info4["momentum_4h"]=="strong":
-                score += 5
-            if info1d["momentum_1d"]=="strong":
-                score += 5
-            if info1["trend"] == info4["trend_4h"] == info1d["trend_1d"]:
-                score += 15
-            info1["score"] = score
-            info1["trend_4h"] = info4["trend_4h"]
-            info1["momentum_4h"] = info4["momentum_4h"]
-            info1["trend_1d"] = info1d["trend_1d"]
-            info1["momentum_1d"] = info1d["momentum_1d"]
-            info1["zone_1d"] = info1d["zone_1d"]
-            out.append(info1)
-    return sorted(out, key=lambda x: x["score"], reverse=True)[:5]
+# ============================================
+# CLUSTER DELTA PRO — A2 FULL
+# ============================================
 
-def build_analysis_message():
-    coins = analyze_top_coins(top_20_liquid_coins())
-    if not coins:
-        return "لا يوجد تحليل متاح حالياً."
-
-    msg = "📊 تحليل السوق العام على الإطارات الزمنية التالية:   (1D + 4H + 1H + 15M)\n\n"
-
-    for i, c in enumerate(coins, 1):
-        symbol = c["symbol"]
-
-        base = 50
-        if c["trend_1d"] == "bull":
-            base += 10
-        if c["trend_1d"] == c["trend_4h"] == c["trend"]:
-            base += 15
-        if c["momentum"] == "strong":
-            base += 5
-        if c["momentum_4h"] == "strong":
-            base += 5
-        if c["momentum_1d"] == "strong":
-            base += 5
-        if c["pos_range"] > 70 and c["trend"]=="bull":
-            base += 5
-        if c["pos_range"] < 30 and c["trend"]=="bear":
-            base += 5
-
-        prob = max(40, min(90, base))
-
-        # 1D
-        if c["trend_1d"]=="bull":
-            txt1d = "اتجاه صاعد رئيسي"
-        elif c["trend_1d"]=="bear":
-            txt1d = "اتجاه هابط رئيسي"
-        else:
-            txt1d = "اتجاه يومي جانبي"
-
-        # 4h
-        if c["trend_4h"]=="bull":
-            txt4 = "اتجاه صاعد قوي" if c["momentum_4h"]=="strong" else "اتجاه صاعد"
-        elif c["trend_4h"]=="bear":
-            txt4 = "اتجاه هابط قوي" if c["momentum_4h"]=="strong" else "اتجاه هابط"
-        else:
-            txt4 = "اتجاه جانبي"
-
-        # 1h
-        if c["trend"]=="bull":
-            txt1 = "زخم إيجابي مستمر" if c["momentum"]=="strong" else "زخم إيجابي"
-        elif c["trend"]=="bear":
-            txt1 = "زخم بيعي" if c["momentum"]=="strong" else "زخم ضعيف"
-        else:
-            txt1 = "حركة جانبية"
-
-        # 15m (تقدير من موقع السعر)
-        if 40 <= c["pos_range"] <= 60:
-            txt15 = "تماسك قبل اندفاع محتمل"
-        elif c["pos_range"] > 70 and c["trend"]=="bull":
-            txt15 = "منطقة قرب مقاومة محتملة"
-        elif c["pos_range"] < 30 and c["trend"]=="bear":
-            txt15 = "ضغط بيعي قرب دعم مكسور"
-        else:
-            txt15 = "حركة متذبذبة"
-
-        direction_icon = "📈" if c["trend_1d"]=="bull" else "📉" if c["trend_1d"]=="bear" else "⚖️"
-        direction_word = "صعود" if direction_icon=="📈" else "هبوط" if direction_icon=="📉" else "حركة جانبية"
-
-        msg += f"{i}) {symbol}\n"
-        msg += f"📅 1D: {txt1d}\n"
-        msg += f"🕓 4h: {txt4}\n"
-        msg += f"🕐 1h: {txt1}\n"
-        msg += f"🕒 15m: {txt15}\n"
-        msg += f"{direction_icon} التوقع: {prob:.0f}% {direction_word} خلال الساعات القادمة\n\n"
-
-    return msg
-
-# ================== رسالة الصفقات اليدوية ==================
-def build_trades_message(trades=None):
-    if trades is None:
-        trades = find_best_trades(top_20_liquid_coins())
-
-    if not trades:
-        return "لا توجد صفقات واضحة حالياً."
-
-    msg = ""
-
-    for i, t in enumerate(trades, 1):
-        ep = t["entry"]["entry_price"]
-        sl = t["sl"]; tp = t["tp"]
-        rr = t["rr"]
-        success = t["success"]
-        direction_icon = "🟢" if t["trend"]=="bull" else "🔴"
-
-        rank_icon = "🥇" if i == 1 else "🥈"
-
-        # الصفقة الفورية
-        msg += f"{rank_icon} {t['symbol']} — {direction_icon} ({t['entry']['entry_type']})\n\n"
-        msg += f"Entry: {fmt_price(ep)}\n"
-        msg += f"SL: {fmt_price(sl)}\n"
-        msg += f"TP: {fmt_price(tp)}\n"
-        msg += f"R:R = 1:{rr:.2f}\n"
-        msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
-
-        reason = t["entry"]["reason"]
-        extra_reason = "توافق الإطارات الزمنية 1D+4H+1H"
-        if t.get("has_fvg_1h"):
-            extra_reason += " + وجود FVG على 1H"
-        msg += f"📌 السبب: {extra_reason} + {reason}\n\n"
-
-        # خط أفقي يفصل بين الصفقتين اليدويتين
-        if "pending_entry" in t:
-            msg += "────────────\n\n"
-            p = t["pending_entry"]["entry_price"]
-            msg += f"📌 صفقة معلقة (انحراف 1%) — ({t['pending_entry']['entry_type']})\n\n"
-            msg += f"Entry: {fmt_price(p)}\n"
-            msg += f"SL: {fmt_price(sl)}\n"
-            msg += f"TP: {fmt_price(tp)}\n"
-            msg += f"R:R (تقريبي) = 1:{rr:.2f}\n"
-            msg += f"📩 عند وصول السعر لهذه المنطقة ستظهر رسالة تأكيد دخول.\n\n"
-
-        if i != len(trades):
-            msg += "==============================\n\n"
-
-    return msg
-
-# ================== رسالة الفحص التلقائي ==================
-def build_auto_scan_message(trades):
-    if not trades:
-        return None
-
-    t = trades[0]
-    ep = t["entry"]["entry_price"]
-    sl = t["sl"]; tp = t["tp"]
-    rr = t["rr"]
-    success = t["success"]
-    direction = "Long" if t["trend"]=="bull" else "Short"
-
-    msg = "⏰ فحص تلقائي — فرصة جديدة\n\n"
-    msg += f"🎯 {t['symbol']} — {direction} (فوري)\n"
-    msg += f"Entry: {fmt_price(ep)}\n"
-    msg += f"SL: {fmt_price(sl)}\n"
-    msg += f"TP: {fmt_price(tp)}\n"
-    msg += f"R:R = 1:{rr:.2f}\n"
-    msg += f"نسبة النجاح المتوقعة: {success:.0f}%\n\n"
-
-    reason = t["entry"]["reason"]
-    extra_reason = "شمعة رفض على 15m + اتجاه 1D/4H/1H متوافق"
-    if t.get("has_fvg_1h"):
-        extra_reason += " + FVG على 1H"
-    msg += f"📌 السبب: {extra_reason}\n"
-
-    return msg
-
-# ================== الفحص التلقائي ==================
-def auto_scan_loop():
-    global LAST_CHAT_ID, LAST_TRADE_SIGNATURE
+async def websocket_aggtrades():
+    """
+    WebSocket لتجميع AggTrades لكل عملة وبناء Cluster Delta كامل:
+    - Bid/Ask per trade
+    - Delta per price level
+    - CVD (Cumulative Volume Delta)
+    - Imbalance / Absorption / Aggression
+    """
+    streams = "/".join([s.lower() + "@aggTrade" for s in SYMBOLS])
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
 
     while True:
         try:
-            if LAST_CHAT_ID:
-                trades = find_best_trades(top_20_liquid_coins())
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                while True:
+                    msg = await ws.recv()
+                    try:
+                        data = json.loads(msg)
+                        payload = data.get("data", {})
+                        symbol = payload.get("s")
+                        price = float(payload.get("p", 0))
+                        qty = float(payload.get("q", 0))
+                        is_buyer_maker = payload.get("m", True)  # True = sell aggressor
 
-                if trades:
-                    now = time.time()
-                    filtered = []
+                        if not symbol or price <= 0 or qty <= 0:
+                            continue
 
-                    for t in trades:
-                        sig = make_signature(t)
+                        # تحديد الشمعة الحالية (على فريم 1m تقريباً)
+                        ts = int(payload.get("T", 0)) // 60000  # candle id بالدقيقة
 
-                        with lock:
-                            if sig in LAST_TRADE_SIGNATURE and now - LAST_TRADE_SIGNATURE[sig] < 1800:
-                                continue
+                        # تهيئة الكلاستر للرمز
+                        if symbol not in cluster_footprint:
+                            cluster_footprint[symbol] = {}
+                        if ts not in cluster_footprint[symbol]:
+                            cluster_footprint[symbol][ts] = {}
 
-                            LAST_TRADE_SIGNATURE[sig] = now
+                        # تقريب السعر لمستوى (Tick Cluster)
+                        price_level = round(price, 2)
 
-                        filtered.append(t)
+                        if price_level not in cluster_footprint[symbol][ts]:
+                            cluster_footprint[symbol][ts][price_level] = {"bid": 0.0, "ask": 0.0}
 
-                    if filtered:
-                        msg = build_auto_scan_message(filtered)
-                        if msg and can_send("auto_scan_msg"):
-                            bot.send_message(LAST_CHAT_ID, msg)
+                        # Aggressive buyer = taker buy = m=False
+                        if is_buyer_maker:
+                            # Aggressive seller → bid volume
+                            cluster_footprint[symbol][ts][price_level]["bid"] += qty
+                        else:
+                            # Aggressive buyer → ask volume
+                            cluster_footprint[symbol][ts][price_level]["ask"] += qty
 
-                        # تأكيد دخول للصفقات المعلقة عند وصول السعر
-                        for t in filtered:
-                            if "pending_entry" in t and "last_price" in t:
-                                pe = t["pending_entry"]["entry_price"]
-                                lp = t["last_price"]
-                                if t["trend"] == "bull" and lp <= pe:
-                                    if can_send(f"pending_confirm_{t['symbol']}"):
-                                        bot.send_message(
-                                            LAST_CHAT_ID,
-                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
-                                        )
-                                if t["trend"] == "bear" and lp >= pe:
-                                    if can_send(f"pending_confirm_{t['symbol']}"):
-                                        bot.send_message(
-                                            LAST_CHAT_ID,
-                                            f"🔔 تم الوصول لسعر الصفقة المعلقة لـ {t['symbol']} عند {fmt_price(pe)}\nهل تؤكد الدخول؟"
-                                        )
+                        # تحديث CVD
+                        if symbol not in cluster_cache:
+                            cluster_cache[symbol] = {"cvd": 0.0, "last_update": time.time()}
+
+                        delta = qty if not is_buyer_maker else -qty
+                        cluster_cache[symbol]["cvd"] += delta
+                        cluster_cache[symbol]["last_update"] = time.time()
+
+                    except Exception:
+                        continue
+        except Exception as e:
+            print("AggTrades WS error:", e)
+            await asyncio.sleep(5)
+
+def cluster_delta_score(symbol: str):
+    """
+    حساب Score للكلاستر السعري (A2 Full):
+    - Delta per price level
+    - Imbalance
+    - Absorption
+    - CVD trend
+    يعيد قيمة تقريبية من -10 إلى +10
+    """
+    if symbol not in cluster_footprint or symbol not in cluster_cache:
+        return 0
+
+    fp = cluster_footprint[symbol]
+    if not fp:
+        return 0
+
+    # آخر شمعة كلاستر
+    last_candle_id = max(fp.keys())
+    levels = fp[last_candle_id]
+
+    if not levels:
+        return 0
+
+    total_bid = 0.0
+    total_ask = 0.0
+    strong_imbalance = 0
+    absorption_points = 0
+
+    for price_level, vals in levels.items():
+        bid = vals.get("bid", 0.0)
+        ask = vals.get("ask", 0.0)
+        total_bid += bid
+        total_ask += ask
+
+        if bid + ask == 0:
+            continue
+
+        # Imbalance قوي على مستوى السعر
+        imbalance = (ask - bid) / (ask + bid)
+
+        if imbalance > 0.6:
+            strong_imbalance += 1  # ضغط شراء قوي
+        elif imbalance < -0.6:
+            strong_imbalance -= 1  # ضغط بيع قوي
+
+        # Absorption: حجم كبير على جانب واحد مع عدم تحرك السعر كثيراً (تقريبي)
+        if bid > ask * 3 and ask > 0:
+            absorption_points -= 1  # امتصاص شراء (ضغط بيعي مخفي)
+        if ask > bid * 3 and bid > 0:
+            absorption_points += 1  # امتصاص بيع (ضغط شرائي مخفي)
+
+    if total_bid + total_ask == 0:
+        return 0
+
+    # Delta عام
+    delta_total = total_ask - total_bid
+    delta_ratio = delta_total / (total_ask + total_bid)
+
+    # CVD
+    cvd_val = cluster_cache[symbol]["cvd"]
+
+    score = 0
+
+    # تأثير الدلتا العامة
+    if delta_ratio > 0.3:
+        score += 3
+    elif delta_ratio > 0.1:
+        score += 1
+    elif delta_ratio < -0.3:
+        score -= 3
+    elif delta_ratio < -0.1:
+        score -= 1
+
+    # تأثير الـ Imbalance
+    score += strong_imbalance
+
+    # تأثير الـ Absorption
+    score += absorption_points
+
+    # تأثير CVD (تقريبي)
+    if cvd_val > 0:
+        score += 2
+    elif cvd_val < 0:
+        score -= 2
+
+    # حصر النتيجة بين -10 و +10
+    if score > 10:
+        score = 10
+    if score < -10:
+        score = -10
+
+    return score
+
+# ============================================
+# REASON BUILDER (ARABIC) — مؤسسي
+# ============================================
+
+def build_reason_text(
+    symbol: str,
+    side: str,
+    trend_d: str,
+    trend_4h: str,
+    trend_1h: str,
+    trend_15m: str,
+    ell_phase: str,
+    fib_score_total: int,
+    smc: int,
+    classic_score: int,
+    ob_imb: int,
+    liq_score: int,
+    rsi_val: float,
+    div: str,
+    mm: str,
+    cluster_score: int
+) -> str:
+    parts = []
+
+    # اتجاه الفريمات
+    parts.append(
+        f"توافق واضح بين الإطارات الزمنية حيث يظهر على الفريم اليومي اتجاه "
+        f"{'صاعد' if trend_d=='bullish' else 'هابط' if trend_d=='bearish' else 'متذبذب'} "
+        f"وعلى فريم 4 ساعات اتجاه "
+        f"{'صاعد' if trend_4h=='bullish' else 'هابط' if trend_4h=='bearish' else 'متذبذب'} "
+        f"مع انسجام ملحوظ على فريم الساعة و 15 دقيقة."
+    )
+
+    # SMC
+    if smc > 0:
+        parts.append("هيكل السوق على فريم الساعة يدعم الاتجاه الحالي مع وجود إشارات SMC إيجابية (BOS / Sweeps / FVG) تعكس دخول سيولة ذكية.")
+    elif smc < 0:
+        parts.append("هيكل السوق على فريم الساعة يشير إلى ضغط معاكس مع إشارات SMC سلبية (كسر قمم/قيعان مهمة وسحب سيولة واضح).")
+
+    # فيبوناتشي
+    if fib_score_total > 0:
+        parts.append("السعر يتفاعل مع مناطق فيبوناتشي انعكاسية مهمة على الفريمات الكبيرة مما يعزز منطقية منطقة الدخول الحالية.")
+
+    # إليوت
+    if ell_phase == "impulsive":
+        parts.append("الحركة الحالية تبدو كموجة دافعة قوية وفق نمط إليوت، ما يدعم استمرار الاتجاه في نفس المسار.")
+    elif ell_phase == "corrective":
+        parts.append("السوق في مرحلة تصحيحية هادئة، ما يجعل مناطق الدخول الحالية أقرب لمناطق إعادة تجميع قبل استكمال الاتجاه.")
+
+    # كلاسيكي / شموع
+    if classic_score > 0:
+        parts.append("الشموع الأخيرة على فريم التنفيذ تظهر ابتلاعًا أو رفضًا سعريًا واضحًا يدعم سيناريو الصفقة.")
+    elif classic_score < 0:
+        parts.append("الشموع الأخيرة تعكس تذبذبًا ورفضًا سعريًا عند مستويات حساسة، ما يعزز فكرة الانعكاس المحتمل.")
+
+    # سيولة دفتر الأوامر
+    if ob_imb > 0 or liq_score > 0:
+        parts.append("توزيع السيولة في دفتر الأوامر يميل لصالح الاتجاه المقترح مع تكدس أوامر مؤسسية بالقرب من مناطق الدخول.")
+    elif ob_imb < 0 or liq_score < 0:
+        parts.append("توزيع السيولة يظهر ضغطًا من الجانب المعاكس، ما يجعل إدارة المخاطرة في هذه الصفقة أكثر أهمية.")
+
+    # MM Model
+    if mm == "discount" and side == "long":
+        parts.append("السعر يتحرك في منطقة خصم (Discount) بالنسبة للمدى السعري الأخير، ما يجعل الشراء من هذه المستويات منطقيًا.")
+    if mm == "premium" and side == "short":
+        parts.append("السعر يتحرك في منطقة مبالغة سعرية (Premium) بالنسبة للمدى السعري الأخير، ما يجعل البيع من هذه المستويات منطقيًا.")
+
+    # Cluster Delta A2 FULL
+    if cluster_score > 2 and side == "long":
+        parts.append("تدفقات أوامر الشراء على مستوى الكلاستر (Delta / CVD) تدعم استمرار الصعود من هذه المناطق.")
+    elif cluster_score < -2 and side == "short":
+        parts.append("تدفقات أوامر البيع على مستوى الكلاستر (Delta / CVD) تدعم استمرار الهبوط من هذه المناطق.")
+    elif abs(cluster_score) <= 2:
+        parts.append("توزيع أوامر الكلاستر متوازن نسبياً، ما يجعل القرار يعتمد أكثر على هيكل السعر والفريمات الأكبر.")
+
+    # RSI / Divergence
+    if side == "long":
+        if rsi_val <= 30:
+            parts.append("مؤشر RSI في منطقة تشبع بيعي مما يدعم سيناريو الارتداد الصاعد من هذه المستويات.")
+        if div == "bullish":
+            parts.append("يوجد دايفرجنس شرائي واضح بين السعر و RSI يعزز احتمالية الانعكاس للأعلى.")
+    else:
+        if rsi_val >= 65:
+            parts.append("مؤشر RSI في منطقة تشبع شرائي مما يدعم سيناريو التصحيح الهابط من هذه المستويات.")
+        if div == "bearish":
+            parts.append("يوجد دايفرجنس بيعي واضح بين السعر و RSI يعزز احتمالية الانعكاس للأسفل.")
+
+    return " ".join(parts)
+
+# ============================================
+# MAIN SIGNAL EVALUATION
+# ============================================
+
+def evaluate_signal(symbol: str):
+    """
+    تقييم صفقة واحدة على كل الفريمات مع كل الفلاتر:
+    - SMC + FVG + كلاسيكي + فيبو + إليوت + EMA200 + RSI + ATR + سيولة + MM Model + Cluster Delta A2 FULL
+    - R:R بين 1:2.5 و 1:8
+    - نسبة نجاح ≥ 70%
+    - تمييز فوري / معلّق حسب قرب السعر من الدخول
+    """
+    tf = load_timeframes(symbol)
+    if not tf:
+        return None
+
+    df1d, df4h, df1h, df15 = tf
+
+    # اتجاهات
+    trend_d = trend_filter(df1d)
+    trend_4h = trend_filter(df4h)
+    trend_1h = trend_filter(df1h)
+    trend_15m = trend_filter(df15)
+
+    # SMC على الساعة
+    smc = smc_score(df1h)
+
+    # سيولة دفتر الأوامر
+    ob_imb = orderbook_imbalance(symbol)
+    liq_score = liquidity_heatmap_score(symbol)
+
+    # MM Model على 4 ساعات
+    mm = market_maker_model(df4h)
+
+    # مؤشرات
+    rsi_val = df15["rsi"].iloc[-1]
+    atr_val = df15["atr"].iloc[-1]
+    div = rsi_divergence(df15)
+    price = df15["close"].iloc[-1]
+
+    # فيبوناتشي (على 1D / 4H / 1H)
+    fib_d = fib_zone_score(df1d, "long" if trend_d == "bullish" else "short")
+    fib_4h = fib_zone_score(df4h, "long" if trend_4h == "bullish" else "short")
+    fib_1h = fib_zone_score(df1h, "long" if trend_1h == "bullish" else "short")
+    fib_total = fib_d + fib_4h + fib_1h
+
+    # إليوت (على 4H)
+    ell_phase = elliott_phase(df4h)
+
+    # كلاسيكي / شموع على 15m
+    classic_score = classic_candle_score(df15)
+
+    # EMA200 فلتر اتجاه عام
+    ema_d = df1d["ema200"].iloc[-1]
+    ema_4h = df4h["ema200"].iloc[-1]
+
+    # Cluster Delta A2 FULL
+    cluster_score = cluster_delta_score(symbol)
+
+    # ================= LONG CONDITIONS =================
+    long_ok = False
+    if trend_d == "bullish":
+        if price > ema_d and price > ema_4h:
+            if rsi_val <= 35 or div == "bullish":
+                long_ok = True
+
+    # ================= SHORT CONDITIONS =================
+    short_ok = False
+    if trend_d == "bearish":
+        if price < ema_d and price < ema_4h:
+            if rsi_val >= 65 or div == "bearish":
+                short_ok = True
+
+    # استثناء: صفقة عكس الاتجاه على 15m فقط عند تصحيح قوي جداً
+    counter_ok = False
+    if trend_d == "bullish" and rsi_val >= 75 and ell_phase == "corrective":
+        counter_ok = True  # شورت عكسي على 15m
+    if trend_d == "bearish" and rsi_val <= 25 and ell_phase == "corrective":
+        counter_ok = True  # لونج عكسي على 15m
+
+    side = None
+    if long_ok:
+        side = "long"
+    elif short_ok:
+        side = "short"
+    elif counter_ok:
+        side = "short" if trend_d == "bullish" else "long"
+
+    if side is None:
+        return None
+
+    # MM Model فلتر
+    if side == "long" and mm == "premium":
+        return None
+    if side == "short" and mm == "discount":
+        return None
+
+    # تجميع نقاط
+    score = 0
+    score += smc
+    score += ob_imb
+    score += liq_score
+    score += fib_total
+    score += classic_score
+    score += cluster_score  # إضافة تأثير الكلاستر
+
+    # إليوت
+    if ell_phase == "impulsive":
+        score += 2
+    elif ell_phase == "corrective":
+        score += 1
+
+    # فلتر R:R + ATR
+    entry, sl, tp, rr = trade_levels(price, atr_val, side)
+    if not entry or rr is None:
+        return None
+    if rr < 2.5 or rr > 8:
+        return None
+
+    # نسبة النجاح
+    prob = probability_score(score)
+    if prob < 70:
+        return None
+
+    # تحديد فوري / معلّق حسب قرب السعر من الدخول
+    live_price = price_cache.get(symbol, price)
+    diff = abs(live_price - entry) / max(entry, 1e-8)
+    is_instant = diff <= 0.01  # 1% انحراف مسموح
+
+    # بناء سبب الصفقة (مؤسسي + Cluster A2 FULL)
+    reason_text = build_reason_text(
+        symbol,
+        side,
+        trend_d,
+        trend_4h,
+        trend_1h,
+        trend_15m,
+        ell_phase,
+        fib_total,
+        smc,
+        classic_score,
+        ob_imb,
+        liq_score,
+        rsi_val,
+        div,
+        mm,
+        cluster_score
+    )
+
+    return {
+        "symbol": symbol,
+        "side": "Long" if side == "long" else "Short",
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "rr": rr,
+        "prob": prob,
+        "score": score,
+        "is_instant": is_instant,
+        "reason_text": reason_text
+    }
+
+# ============================================
+# SCAN MARKET — MANUAL (أفضل صفقتين)
+# ============================================
+
+def scan_market_manual():
+    """
+    فحص السوق عند إرسال كلمة (صفقات)
+    يعيد أفضل صفقتين فقط — مرتبتين حسب نسبة النجاح
+    """
+    results = []
+
+    for symbol in SYMBOLS:
+        try:
+            sig = evaluate_signal(symbol)
+            if sig:
+                results.append(sig)
+        except Exception:
+            continue
+
+    if not results:
+        return []
+
+    # ترتيب حسب نسبة النجاح
+    results = sorted(results, key=lambda x: x["prob"], reverse=True)
+
+    # أفضل صفقتين فقط
+    return results[:2]
+
+# ============================================
+# SCAN MARKET — AUTO (صفقة واحدة فقط)
+# ============================================
+
+def scan_market_auto():
+    """
+    فحص آلي — يعيد أفضل صفقة واحدة فقط بنسبة نجاح ≥ 70%
+    ولا يكرر نفس العملة خلال ساعة
+    """
+    best = None
+
+    for symbol in SYMBOLS:
+        # فلتر عدم التكرار
+        last_time = last_signal_time_auto.get(symbol)
+        if last_time and time.time() - last_time < 3600:  # ساعة
+            continue
+
+        try:
+            sig = evaluate_signal(symbol)
+            if not sig:
+                continue
+
+            if sig["prob"] < 70:
+                continue
+
+            if best is None or sig["prob"] > best["prob"]:
+                best = sig
+
+        except Exception:
+            continue
+
+    return best
+
+# ============================================
+# TELEGRAM HANDLER — صفقات (يدوي)
+# ============================================
+
+async def signals(update, context):
+    chat_id = update.message.chat_id
+    await update.message.reply_text("جارٍ الفحص ...⏳")
+
+    sigs = scan_market_manual()
+
+    if not sigs:
+        await update.message.reply_text(format_no_signal())
+        return
+
+    # تحديث وقت آخر صفقة يدوية
+    for s in sigs:
+        last_signal_time_manual[s["symbol"]] = time.time()
+
+    # إرسال الرسالة بصيغة مطابقة 1:1
+    msg = format_manual_signals(sigs)
+    await update.message.reply_text(msg)
+
+# ============================================
+# AUTO SCAN TASK — كل 10 دقائق
+# ============================================
+
+async def auto_scan_task(app):
+    while True:
+        try:
+            sig = scan_market_auto()
+
+            if sig:
+                symbol = sig["symbol"]
+                last_signal_time_auto[symbol] = time.time()
+
+                msg = format_auto_signal(sig)
+
+                # إرسال لجميع الشاتات النشطة
+                for chat in list(active_chats):
+                    try:
+                        await app.bot.send_message(chat, msg)
+                    except Exception:
+                        continue
 
         except Exception as e:
             print("Auto scan error:", e)
 
-        time.sleep(600)
+        await asyncio.sleep(600)  # كل 10 دقائق
 
-# ================== الهاندلرز ==================
-@bot.message_handler(commands=['start'])
-def start(m):
-    global LAST_CHAT_ID
-    LAST_CHAT_ID = m.chat.id
+# ============================================
+# PENDING ENTRY MONITOR — مراقبة الدخول المعلّق
+# ============================================
 
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("تحليل", "صفقات")
-
-    bot.reply_to(m, "🚀 أهلاً بك، اختر:\n• تحليل\n• صفقات", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text in ["تحليل", "صفقات"])
-def main_handler(m):
-    global LAST_CHAT_ID
-    LAST_CHAT_ID = m.chat.id
-
-    if m.text == "تحليل":
-        wait = bot.reply_to(m, "جاري تحليل السوق على (1D + 4H + 1H + 15M)...")
-
+async def pending_monitor(app):
+    """
+    يراقب السعر الحي عبر WebSocket
+    ويرسل رسالة تذكير عند وصول السعر إلى منطقة الدخول
+    (للصفقات المعلقة فقط)
+    """
+    while True:
         try:
-            msg = build_analysis_message()
-            bot.edit_message_text(msg, m.chat.id, wait.message_id)
+            for symbol, price in list(price_cache.items()):
+                sig = evaluate_signal(symbol)
+                if not sig:
+                    continue
+
+                if sig["is_instant"]:
+                    continue  # هذه صفقة فورية، لا تحتاج تذكير
+
+                entry = sig["entry"]
+                side = sig["side"]
+                prob = sig["prob"]
+
+                diff = abs(price - entry) / max(entry, 1e-8)
+
+                if diff <= 0.01:  # 1% انحراف مسموح
+                    alert = format_pending_entry_alert(
+                        symbol, side, price, entry, prob
+                    )
+
+                    for chat in list(active_chats):
+                        try:
+                            await app.bot.send_message(chat, alert)
+                        except Exception:
+                            continue
 
         except Exception as e:
-            bot.edit_message_text("حدث خطأ أثناء التحليل.", m.chat.id, wait.message_id)
-            print("Analysis error:", e)
+            print("Pending monitor error:", e)
 
+        await asyncio.sleep(5)  # تحديث سريع كل 5 ثوانٍ
+
+# ============================================
+# TELEGRAM HANDLER — تحليل (يدوي)
+# ============================================
+
+async def analysis(update, context):
+    chat_id = update.message.chat_id
+    await update.message.reply_text("جارٍ التحليل ...💱")
+
+    # تحليل الأخبار بالعربي
+    news_comment = analyze_news_arabic()
+
+    # أفضل 5 عملات نشاطًا
+    top5 = get_top5_active()
+
+    coins_analysis = []
+
+    for symbol in top5:
+        tf = load_timeframes(symbol)
+        if not tf:
+            continue
+
+        df1d, df4h, df1h, df15 = tf
+
+        trend_d = trend_filter(df1d)
+        trend_4h = trend_filter(df4h)
+        trend_1h = trend_filter(df1h)
+        trend_15m = trend_filter(df15)
+
+        # توقع بسيط
+        last = df1h["close"].iloc[-1]
+        prev = df1h["close"].iloc[-10]
+        direction = "صعود" if last > prev else "هبوط"
+        percent = round(abs((last - prev) / max(prev, 1e-8)) * 100, 2)
+
+        expectation = f"{percent}% {direction} خلال الساعات القادمة"
+
+        coins_analysis.append({
+            "symbol": symbol,
+            "trend_1d": f"اتجاه {'صاعد' if trend_d=='bullish' else 'هابط' if trend_d=='bearish' else 'متذبذب'}",
+            "trend_4h": f"اتجاه {'صاعد' if trend_4h=='bullish' else 'هابط' if trend_4h=='bearish' else 'متذبذب'}",
+            "trend_1h": f"زخم {'إيجابي' if trend_1h=='bullish' else 'سلبي' if trend_1h=='bearish' else 'ضعيف'}",
+            "trend_15m": f"سلوك {'إيجابي' if trend_15m=='bullish' else 'سلبي' if trend_15m=='bearish' else 'متذبذب'}",
+            "expectation": expectation
+        })
+
+    # إرسال التحليل بصيغة مطابقة 1:1
+    msg = format_daily_report(news_comment, coins_analysis)
+    await update.message.reply_text(msg)
+
+# ============================================
+# FASTAPI APP
+# ============================================
+
+app_api = FastAPI()
+
+@app_api.get("/ping")
+def ping():
+    return {"status": "alive"}
+
+@app_api.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            data = await ws.receive_text()
+            await ws.send_text(f"Message: {data}")
+    except Exception:
+        await ws.close()
+
+def run_api():
+    uvicorn.run(
+        app_api,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "10000"))
+    )
+
+# ============================================
+# WEBSOCKETS — PRICE STREAM
+# ============================================
+
+async def websocket_price_stream():
+    """
+    WebSocket لأسعار العقود الدائمة من بايننس فيوتشرز.
+    يحدث price_cache بشكل لحظي.
+    مع إعادة اتصال تلقائية عند الانقطاع.
+    """
+    streams = "/".join([s.lower() + "@markPrice" for s in SYMBOLS])
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                while True:
+                    msg = await ws.recv()
+                    try:
+                        data = json.loads(msg)
+                        payload = data.get("data", {})
+                        symbol = payload.get("s")
+                        price = float(payload.get("p", 0))
+
+                        if symbol and price > 0:
+                            price_cache[symbol] = price
+                    except Exception:
+                        continue
+        except Exception as e:
+            print("Price WS error:", e)
+            await asyncio.sleep(5)
+
+# ============================================
+# WEBSOCKETS — ORDERBOOK STREAM
+# ============================================
+
+async def websocket_orderbook():
+    """
+    WebSocket للأوردر بوك (عمق السوق) لتقدير السيولة والـ imbalance.
+    يحدث orderbook_cache و liquidity_map.
+    مع إعادة اتصال تلقائية عند الانقطاع.
+    """
+    streams = "/".join([s.lower() + "@depth10@100ms" for s in SYMBOLS])
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                while True:
+                    msg = await ws.recv()
+                    try:
+                        data = json.loads(msg)
+                        payload = data.get("data", {})
+                        symbol = payload.get("s")
+                        bids = payload.get("b", [])
+                        asks = payload.get("a", [])
+
+                        if not symbol:
+                            continue
+
+                        # تحويل إلى أرقام
+                        bids_parsed = [(float(p), float(q)) for p, q in bids]
+                        asks_parsed = [(float(p), float(q)) for p, q in asks]
+
+                        orderbook_cache[symbol] = {
+                            "bids": bids_parsed,
+                            "asks": asks_parsed
+                        }
+
+                        # بناء خريطة سيولة بسيطة
+                        levels = []
+                        for p, q in bids_parsed[:5]:
+                            levels.append({"price": p, "liq": q, "side": "buy"})
+                        for p, q in asks_parsed[:5]:
+                            levels.append({"price": p, "liq": q, "side": "sell"})
+
+                        liquidity_map[symbol] = {"levels": levels}
+
+                    except Exception:
+                        continue
+        except Exception as e:
+            print("Orderbook WS error:", e)
+            await asyncio.sleep(5)
+
+# ============================================
+# BOOT TASKS
+# ============================================
+
+async def BOOT(app):
+    print("🚀 Booting institutional trading bot...")
+
+    asyncio.create_task(websocket_price_stream())
+    asyncio.create_task(websocket_orderbook())
+    asyncio.create_task(websocket_aggtrades())   # A2 FULL Cluster Delta
+    asyncio.create_task(auto_scan_task(app))
+    asyncio.create_task(pending_monitor(app))
+
+    print("✅ System online")
+
+# ============================================
+# TELEGRAM MESSAGE ROUTER
+# ============================================
+
+async def handle(update, context):
+    """
+    موجه الرسائل النصية:
+    - "صفقات" → أفضل صفقتين
+    - "تحليل" → تحليل يومي
+    - غير ذلك → رسالة مساعدة بسيطة
+    """
+    chat_id = update.message.chat_id
+    text = (update.message.text or "").strip()
+
+    active_chats.add(chat_id)
+
+    if text == "صفقات":
+        await signals(update, context)
+    elif text == "تحليل":
+        await analysis(update, context)
     else:
-        wait = bot.reply_to(m, "جاري البحث عن أفضل الصفقات...")
+        msg = (
+            "مرحباً 👋\n"
+            "استخدم الأزرار بالأسفل أو أرسل:\n"
+            "- كلمة (صفقات) لاستخراج أفضل الفرص الحالية.\n"
+            "- كلمة (تحليل) للحصول على نظرة يومية عامة."
+        )
+        await update.message.reply_text(msg, reply_markup=keyboard)
 
-        try:
-            msg = build_trades_message()
-            bot.edit_message_text(msg, m.chat.id, wait.message_id)
+# ============================================
+# MAIN
+# ============================================
 
-        except Exception as e:
-            bot.edit_message_text("حدث خطأ أثناء توليد الصفقات.", m.chat.id, wait.message_id)
-            print("Trades error:", e)
+def main():
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
 
-# ================== التشغيل ==================
-print("Bot is running...")
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-threading.Thread(target=auto_scan_loop, daemon=True).start()
+    # أوامر
+    application.add_handler(CommandHandler("start", start))
 
-def start_bot():
-    bot.infinity_polling(skip_pending=True)
+    # رسائل نصية
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle)
+    )
 
-threading.Thread(target=start_bot, daemon=True).start()
+    # تشغيل FastAPI في ثريد منفصل
+    threading.Thread(target=run_api, daemon=True).start()
+
+    # تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
+    loop = asyncio.get_event_loop()
+    loop.create_task(BOOT(application))
+
+    # تشغيل بوت التليجرام
+    application.run_polling()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    main()
+  
