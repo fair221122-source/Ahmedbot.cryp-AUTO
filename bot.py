@@ -51,6 +51,16 @@ async def webhook(request: Request):
 def run_api():
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
+# ⭐ تشغيل FastAPI
+threading.Thread(target=run_api).start()
+
+# ⭐ تشغيل بوت التليجرام
+async def start_bot():
+    await telegram_app.initialize()
+    await telegram_app.start()
+
+threading.Thread(target=lambda: asyncio.run(start_bot())).start()
+
 # ============================================
 # GLOBAL CONFIG
 # ============================================
