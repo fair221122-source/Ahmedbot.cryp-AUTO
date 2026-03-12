@@ -1,5 +1,7 @@
-pyTelegramBotAPI
+python-telegram-bot==20.3
 requests
 pandas
 numpy
-Flask==3.0.0
+fastapi
+uvicorn
+websockets
