@@ -2,6 +2,7 @@ app = "ahmedbot-cryp-auto"
 primary_region = "iad"
 
 [build]
+  command = "python bot.py"
 
 [env]
   PORT = "8080"
