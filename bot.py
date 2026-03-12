@@ -21,6 +21,18 @@ import uvicorn
 from fastapi import FastAPI, WebSocket
 import websockets
 
+# -------------------------
+# FastAPI + Port for Render
+# -------------------------
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"status": "running"}
+
+def run_api():
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 # ============================================
 # GLOBAL CONFIG
 # ============================================
@@ -1719,30 +1731,37 @@ async def handle(update, context):
 # MAIN
 # ============================================
 
-def main():
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
+import os
+import asyncio
+import json
+import time
+from datetime import datetime, timedelta
 
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+import requests
+import numpy as np
+import pandas as pd
 
-    # أوامر
-    application.add_handler(CommandHandler("start", start))
+from telegram import ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters
+)
 
-    # رسائل نصية
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle)
-    )
+import threading
+import uvicorn
+from fastapi import FastAPI, WebSocket
+import websockets
 
-    # تشغيل FastAPI في ثريد منفصل
-    threading.Thread(target=run_api, daemon=True).start()
+# -------------------------
+# FastAPI + Port for Render
+# -------------------------
+app = FastAPI()
 
-    # تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
-    loop = asyncio.get_event_loop()
-    loop.create_task(BOOT(application))
+@app.get("/")
+def home():
+    return {"status": "running"}
 
-    # تشغيل بوت التليجرام
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
-  
+def run_api():
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
