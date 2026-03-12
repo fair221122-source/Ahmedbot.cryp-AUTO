@@ -1624,7 +1624,7 @@ def run_api():
     uvicorn.run(
         app_api,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "10000"))
+        port=int(os.getenv("PORT", "8080"))
     )
 
 # ============================================
