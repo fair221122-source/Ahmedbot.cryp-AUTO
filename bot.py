@@ -55,8 +55,8 @@ def run_api():
 # GLOBAL CONFIG
 # ============================================
 
-TELEGRAM_TOKEN = "8524445307:AAEDw5THEah-iBwpgsTqvK2Pi7abpzWarZk"
-CRYPTOPANIC_API = "a5563e90848ba81e4aeca929e26d90069b2d1b9f"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CRYPTOPANIC_API = os.getenv("CRYPTOPANIC_API")
 
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
