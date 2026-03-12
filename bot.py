@@ -35,7 +35,7 @@ def home():
 # Telegram Webhook Section
 # -------------------------
 
-TOKEN = os.getenv("TOKEN_BOT")   # التوكن من البيئة
+TOKEN = os.getenv("TELEGRAM_TOKEN")   # التوكن من البيئة
 
 # إنشاء تطبيق التليجرام
 telegram_app = Application.builder().token(TOKEN).build()
