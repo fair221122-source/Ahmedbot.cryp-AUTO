@@ -1639,8 +1639,10 @@ async def websocket_endpoint(ws: WebSocket):
         await ws.close()
 
 def run_api():
+    import asyncio
+    asyncio.set_event_loop(asyncio.new_event_loop())
     uvicorn.run(
-        app_api,
+        app,
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8080"))
     )
