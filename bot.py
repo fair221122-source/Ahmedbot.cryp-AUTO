@@ -1794,14 +1794,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # 1. تشغيل التليجرام في الخلفية لضمان عدم توقف السيرفر
-    import threading
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-
-    # 2. تشغيل uvicorn ليرد على Fly.io على البورت 8080
-    import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run("bot:app", host="0.0.0.0", port=8080)
     
-    # "bot:app" تعني: ابحث في ملف bot.py عن كائن اسمه app
-    uvicorn.run("bot:app", host="0.0.0.0", port=port)
