@@ -62,12 +62,15 @@ def run_api():
 # ⭐ تشغيل FastAPI
 threading.Thread(target=run_api).start()
 
-# ⭐ تشغيل بوت التليجرام
+# ⭐ تشغيل بوت التليجرام (Webhook)
 async def start_bot():
     await telegram_app.initialize()
     await telegram_app.start()
+    await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
 
 
+if __name__ == "__main__":
+    asyncio.run(start_bot())
 # ============================================
 # GLOBAL CONFIG
 # ============================================
