@@ -1800,4 +1800,4 @@ if __name__ == "__main__":
     # 2. تشغيل السيرفر في Thread منفصل لفتح البورت 8080 فوراً
     threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8080), daemon=True).start()
     # 3. تشغيل البوت (هو الذي سيقود الـ Loop الرئيسي)
-    telegram_app.run_polling(drop_pending_updates=True)
+
