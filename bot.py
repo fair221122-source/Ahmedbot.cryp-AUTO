@@ -42,9 +42,21 @@ def home():
 # -------------------------
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN must be set.")
 
 async def start(update: Update, context):
-    await update.message.reply_text("مرحبا بك! البوت يعمل الآن.")
+    chat_id = update.message.chat.id
+    active_chats.add(chat_id)
+
+    msg = (
+        "بوت التحليل الاحترافي جاهز ✅\n"
+        "مهمتي مساعدتك في تحليل سوق الفيوتشر واستخراج أفضل الفرص.\n\n"
+        "استخدم الأزرار بالأسفل:\n"
+        "- صفقات: لاستخراج أفضل وأقوى الفرص المتاحة الآن\n"
+        "- تحليل: للحصول على نظرة يومية عامة عن السوق"
+    )
+    await update.message.reply_text(msg, reply_markup=keyboard)
 
 async def handle(update: Update, context):
     await update.message.reply_text("تم استلام رسالتك.")
@@ -62,7 +74,7 @@ async def webhook(request: Request):
     return {"ok": True}
 
 # -------------------------
-# WebSocket (تم إصلاح الخطأ هنا)
+# WebSocket
 # -------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -90,12 +102,16 @@ async def start_bot_event():
     await telegram_app.initialize()
     await telegram_app.start()
     await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
+
 # ============================================
 # GLOBAL CONFIG
 # ============================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CRYPTOPANIC_API = os.getenv("CRYPTOPANIC_API")
+
+if not CRYPTOPANIC_API:
+    raise ValueError("CRYPTOPANIC_API must be set.")
 
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
@@ -143,35 +159,19 @@ keyboard = ReplyKeyboardMarkup(
 # ============================================
 
 def rr_to_str(rr: float) -> str:
-    """
-    يحوّل قيمة RR مثل 4.0 إلى نص بالشكل: 1:4.00
-    """
     return f"1:{rr:.2f}"
 
 def format_direction_emoji(side: str) -> str:
-    """
-    يعيد 🟢 للـ Long و 🔴 للـ Short
-    """
     return "🟢" if side.lower() == "long" else "🔴"
 
 def format_side_hashtag(side: str) -> str:
-    """
-    يعيد #Long أو #Short
-    """
     return "#Long" if side.lower() == "long" else "#Short"
 
 # ============================================
 # MESSAGE TEMPLATES — MANUAL SIGNALS
-# (لا تغيير في الشكل إطلاقاً)
 # ============================================
 
 def format_manual_signals(signals: list) -> str:
-    """
-    تنسيق رسالة: أفضل صفقتين في السوق حالياً (يدوي — عند إرسال كلمة صفقات)
-    كل عنصر في signals هو dict يحتوي على:
-    symbol, side, entry, sl, tp, rr, prob, is_instant, reason_text
-    is_instant: True = (فوري) / False = (معلّق)
-    """
     if not signals:
         return (
             "السوق متذبذب ولا توجد فرصة دخول مثالية حاليا، حاول بعد دقائق"
@@ -213,7 +213,6 @@ def format_manual_signals(signals: list) -> str:
             text += "توافق الإطارات الزمنية مع سلوك سعري قوي وسيولة مؤسسية واضحة.\n"
         text += "--------------------------------\n"
 
-    # ملاحظة خاصة للصفقة المعلقة (إن وجدت)
     if any(not s.get("is_instant", True) for s in signals[:2]):
         text += (
             "ستصلك رسالة تأكيد عند وصول السعر إلى المنطقة المثالية للدخول (للصفقة المعلّقة فقط).\n"
@@ -223,14 +222,9 @@ def format_manual_signals(signals: list) -> str:
 
 # ============================================
 # MESSAGE TEMPLATES — AUTO SCAN SIGNAL
-# (لا تغيير في الشكل إطلاقاً)
 # ============================================
 
 def format_auto_signal(sig: dict) -> str:
-    """
-    تنسيق رسالة الفحص الآلي:
-    ⏰ فحص آلي — فرصة جديدة
-    """
     symbol = sig["symbol"]
     side = sig["side"]
     entry = sig["entry"]
@@ -267,14 +261,9 @@ def format_auto_signal(sig: dict) -> str:
 
 # ============================================
 # MESSAGE TEMPLATES — PENDING ENTRY ALERT
-# (لا تغيير في الشكل إطلاقاً)
 # ============================================
 
 def format_pending_entry_alert(symbol: str, side: str, price: float, entry: float, prob: int) -> str:
-    """
-    رسالة التذكير عند وصول السعر إلى المنطقة المثالية للدخول
-    (للصفقات المعلقة فقط)
-    """
     text = "تذكير ... 🔔\n"
     text += "السعر وصل إلى المنطقة المثالية للدخول، خذ نظرة و قرر\n\n"
     text += f"{symbol}\n\n"
@@ -293,13 +282,9 @@ def format_no_signal() -> str:
 
 # ============================================
 # MESSAGE TEMPLATES — DAILY REPORT
-# (لا تغيير في الشكل إطلاقاً)
 # ============================================
 
 def format_daily_report_header(news_comment: str) -> str:
-    """
-    رأس رسالة التحليل اليومي + تعليق إخباري مترجم بالعربي
-    """
     text = (
         "التحليل اليومي لسوق الكريبتو حسب بيانات السوق والأخبار الواردة من موقع CryptoPanic\n"
         "-------------------------------------------\n"
@@ -318,9 +303,6 @@ def format_daily_coin_line(
     trend_15m: str,
     expectation: str
 ) -> str:
-    """
-    تنسيق سطر تحليل عملة واحدة ضمن أفضل 5 عملات نشطة
-    """
     text = f"{rank}) {symbol}\n"
     text += f"📅 1D: {trend_1d}\n"
     text += f"⏰ 4h: {trend_4h}\n"
@@ -331,10 +313,6 @@ def format_daily_coin_line(
     return text
 
 def format_daily_report(news_comment: str, coins_analysis: list) -> str:
-    """
-    news_comment: نص عربي يشرح تأثير الأخبار
-    coins_analysis: قائمة من dict لكل عملة
-    """
     text = format_daily_report_header(news_comment)
 
     if not coins_analysis:
@@ -376,9 +354,6 @@ async def start(update, context):
 # ============================================
 
 def fetch_klines(symbol: str, interval: str, limit: int = 500):
-    """
-    جلب شموع بايننس مع كاش لمدة 60 ثانية لتخفيف الضغط.
-    """
     key = f"{symbol}_{interval}"
     now = time.time()
 
@@ -450,9 +425,6 @@ def add_indicators(df):
 # ============================================
 
 def fetch_crypto_news_raw():
-    """
-    جلب آخر الأخبار من CryptoPanic (بالإنجليزي).
-    """
     if not CRYPTOPANIC_API:
         return []
 
@@ -469,25 +441,17 @@ def fetch_crypto_news_raw():
 # ============================================
 
 def translate_to_arabic(text: str) -> str:
-    """
-    ترجمة بسيطة بدون API خارجي — تحويل الإنجليزية إلى عربية بأسلوب تلخيصي.
-    ليست ترجمة حرفية، بل إعادة صياغة عربية مفهومة.
-    """
     text = text.lower()
 
-    # كلمات مفتاحية إيجابية
     if any(w in text for w in ["bull", "adoption", "growth", "etf", "approval"]):
         return "الأخبار تشير إلى تحسن في شهية المخاطرة وزيادة اهتمام المؤسسات بالسوق."
 
-    # كلمات مفتاحية سلبية
     if any(w in text for w in ["hack", "ban", "lawsuit", "crash", "fear"]):
         return "الأخبار تحمل طابعًا سلبيًا وقد تضغط على حركة السوق مؤقتًا."
 
-    # كلمات محايدة
     if any(w in text for w in ["update", "upgrade", "announcement"]):
         return "هناك تحديثات تقنية وأخبار محايدة قد تؤثر بشكل محدود على حركة السوق."
 
-    # fallback
     return "خبر عام متعلق بالسوق دون تأثير واضح."
 
 # ============================================
@@ -495,9 +459,6 @@ def translate_to_arabic(text: str) -> str:
 # ============================================
 
 def analyze_news_arabic():
-    """
-    يعيد تعليق عربي احترافي عن حالة الأخبار.
-    """
     raw_news = fetch_crypto_news_raw()
     if not raw_news:
         return "لا توجد أخبار مؤثرة حالياً."
@@ -528,9 +489,6 @@ def analyze_news_arabic():
 # ============================================
 
 def get_top5_active():
-    """
-    اختيار أكثر 5 عملات نشاطًا (حركة + سيولة).
-    """
     ranking = []
 
     for s in SYMBOLS:
@@ -572,9 +530,6 @@ def load_timeframes(symbol: str):
 # ============================================
 
 def trend_filter(df):
-    """
-    اتجاه بسيط: مقارنة السعر مع EMA200 + ميل المتوسط.
-    """
     if len(df) < 20:
         return "sideways"
 
@@ -593,9 +548,6 @@ def trend_filter(df):
 # ============================================
 
 def rsi_divergence(df):
-    """
-    دايفرجنس بسيط بين السعر و RSI على آخر 30 شمعة.
-    """
     if len(df) < 15:
         return None
 
@@ -612,11 +564,9 @@ def rsi_divergence(df):
     rsi_low1 = rsi_vals.iloc[-10]
     rsi_low2 = rsi_vals.iloc[-3]
 
-    # دايفرجنس بيعي: السعر يصعد و RSI يهبط
     if price_high2 > price_high1 and rsi_high2 < rsi_high1:
         return "bearish"
 
-    # دايفرجنس شرائي: السعر يهبط و RSI يصعد
     if price_low2 < price_low1 and rsi_low2 > rsi_low1:
         return "bullish"
 
@@ -637,9 +587,6 @@ def fib_levels(high_price, low_price):
     }
 
 def detect_swing_points(df, lookback=5):
-    """
-    اكتشاف قمم وقيعان بسيطة لاستخدامها في فيبوناتشي و SMC.
-    """
     highs = df["high"]
     lows = df["low"]
 
@@ -658,11 +605,6 @@ def detect_swing_points(df, lookback=5):
     return swing_highs, swing_lows
 
 def fib_zone_score(df, side: str):
-    """
-    يعطي نقاط إذا السعر قريب من مناطق فيبو الانعكاسية.
-    للشراء نفضّل 0.5 - 0.618 - 0.786 من قاع إلى قمة.
-    للبيع نفضّل 0.5 - 0.618 - 0.786 من قمة إلى قاع.
-    """
     if len(df) < 100:
         return 0
 
@@ -671,14 +613,14 @@ def fib_zone_score(df, side: str):
     price = df["close"].iloc[-1]
 
     if side == "long":
-        fibs = fib_levels(low_price, high_price)  # من قاع إلى قمة
+        fibs = fib_levels(low_price, high_price)
     else:
-        fibs = fib_levels(high_price, low_price)  # من قمة إلى قاع
+        fibs = fib_levels(high_price, low_price)
 
     score = 0
     for lvl_name, lvl_price in fibs.items():
         diff = abs(price - lvl_price) / max(lvl_price, 1e-8)
-        if diff < 0.005:  # قريب جداً من مستوى مهم
+        if diff < 0.005:
             score += 2
         elif diff < 0.01:
             score += 1
@@ -690,9 +632,6 @@ def fib_zone_score(df, side: str):
 # ============================================
 
 def elliott_phase(df):
-    """
-    تقدير بسيط لمرحلة الحركة (دافعة / تصحيحية) بناءً على الزخم والتذبذب.
-    """
     if len(df) < 50:
         return "neutral"
 
@@ -704,9 +643,9 @@ def elliott_phase(df):
     direction = recent.iloc[-1] - recent.iloc[0]
 
     if vol > 0.02 and abs(direction) > abs(recent.mean()) * 0.5:
-        return "impulsive"  # موجة دافعة قوية
+        return "impulsive"
     if vol < 0.01:
-        return "corrective"  # تصحيح هادئ
+        return "corrective"
     return "neutral"
 
 # ============================================
@@ -714,9 +653,6 @@ def elliott_phase(df):
 # ============================================
 
 def orderbook_imbalance(symbol: str):
-    """
-    يرجع قيمة تقريبية لعدم توازن الطلب/العرض من الكاش.
-    """
     ob = orderbook_cache.get(symbol)
     if not ob:
         return 0
@@ -747,9 +683,6 @@ def orderbook_imbalance(symbol: str):
     return 0
 
 def liquidity_heatmap_score(symbol: str):
-    """
-    درجة تقريبية لقرب السعر من مناطق سيولة قوية.
-    """
     lm = liquidity_map.get(symbol)
     if not lm:
         return 0
@@ -761,12 +694,12 @@ def liquidity_heatmap_score(symbol: str):
     best_score = 0
     for lvl in lm.get("levels", []):
         lvl_price = lvl.get("price")
-        lvl_side = lvl.get("side")  # "buy" أو "sell"
+        lvl_side = lvl.get("side")
         lvl_liq = lvl.get("liq", 0)
 
         if lvl_price and lvl_liq > 0:
             diff = abs(price - lvl_price) / max(lvl_price, 1e-8)
-            if diff < 0.003:  # قريب جداً من مستوى سيولة
+            if diff < 0.003:
                 if lvl_side == "buy":
                     best_score += 2
                 elif lvl_side == "sell":
@@ -784,10 +717,6 @@ def liquidity_heatmap_score(symbol: str):
 # ============================================
 
 def market_maker_model(df):
-    """
-    تقسيم بسيط للسعر بالنسبة للمدى الأخير:
-    Premium / Discount / Equilibrium
-    """
     if len(df) < 200:
         return "equilibrium"
 
@@ -808,13 +737,6 @@ def market_maker_model(df):
 # ============================================
 
 def detect_fvg(df, min_body_ratio=0.6):
-    """
-    اكتشاف FVG بسيط:
-    - فجوة بين شمعتين متتاليتين
-    - جسم شمعة قوي
-    يعاد: قائمة من dict فيها:
-      {"index": i, "direction": "bullish"/"bearish"}
-    """
     fvg_list = []
     if len(df) < 5:
         return fvg_list
@@ -825,14 +747,12 @@ def detect_fvg(df, min_body_ratio=0.6):
     c = df["close"]
 
     for i in range(2, len(df)):
-        # فجوة صاعدة: قاع الشمعة الحالية أعلى من قمة الشمعة السابقة
         if l.iloc[i] > h.iloc[i - 1]:
             body = abs(c.iloc[i] - o.iloc[i])
             rng = h.iloc[i] - l.iloc[i]
             if rng > 0 and body / rng >= min_body_ratio:
                 fvg_list.append({"index": i, "direction": "bullish"})
 
-        # فجوة هابطة: قمة الشمعة الحالية أسفل من قاع الشمعة السابقة
         if h.iloc[i] < l.iloc[i - 1]:
             body = abs(c.iloc[i] - o.iloc[i])
             rng = h.iloc[i] - l.iloc[i]
@@ -842,9 +762,6 @@ def detect_fvg(df, min_body_ratio=0.6):
     return fvg_list
 
 def fvg_score(df, side: str):
-    """
-    يعطي نقاط بناءً على وجود FVG حديثة تدعم الاتجاه.
-    """
     fvgs = detect_fvg(df)
     if not fvgs:
         return 0
@@ -863,13 +780,6 @@ def fvg_score(df, side: str):
 # ============================================
 
 def smc_score(df1h):
-    """
-    تقدير نقاط SMC على فريم الساعة:
-    - BOS / CHOCH
-    - FVG
-    - Sweeps
-    - هيكل HH/HL/LH/LL
-    """
     if len(df1h) < 60:
         return 0
 
@@ -879,36 +789,30 @@ def smc_score(df1h):
     lows = df1h["low"]
     opens = df1h["open"]
 
-    # BOS / CHOCH بسيط: اختراق قمة/قاع آخر 20 شمعة
     recent_high = highs.rolling(20).max().iloc[-2]
     recent_low = lows.rolling(20).min().iloc[-2]
     last_close = closes.iloc[-1]
 
     if last_close > recent_high:
-        score += 3  # BOS up قوي
+        score += 3
     if last_close < recent_low:
-        score -= 3  # BOS down قوي
+        score -= 3
 
-    # Sweeps: كسر قمة/قاع ثم إغلاق عكسي
     high_prev = highs.iloc[-2]
     low_prev = lows.iloc[-2]
     high_curr = highs.iloc[-1]
     low_curr = lows.iloc[-1]
     close_curr = closes.iloc[-1]
 
-    # Sweep sell-side (كسر قاع ثم إغلاق فوقه)
     if low_curr < low_prev and close_curr > low_prev:
         score += 2
 
-    # Sweep buy-side (كسر قمة ثم إغلاق تحتها)
     if high_curr > high_prev and close_curr < high_prev:
         score -= 2
 
-    # FVG على فريم الساعة
     fvg_1h = fvg_score(df1h, "long" if last_close > recent_high else "short")
     score += fvg_1h
 
-    # هيكل HH/HL/LH/LL بسيط
     swing_highs, swing_lows = detect_swing_points(df1h, lookback=3)
     if len(swing_highs) >= 2 and len(swing_lows) >= 2:
         last_sh1 = swing_highs[-1]
@@ -916,11 +820,9 @@ def smc_score(df1h):
         last_sl1 = swing_lows[-1]
         last_sl2 = swing_lows[-2]
 
-        # اتجاه صاعد: HH + HL
-        if highs.iloc[last_sh1] > highs.iloc[last_sh2] and lows.iloc[last_sl1] > lows.iloc[last_sl2]:
+        if highs.iloc[last_sh1] > highs.iloc[last_sh2] and lows.iloc[last_sl1] > lows.iloc[last_sl1]:
             score += 2
-        # اتجاه هابط: LH + LL
-        if highs.iloc[last_sh1] < highs.iloc[last_sh2] and lows.iloc[last_sl1] < lows.iloc[last_sl2]:
+        if highs.iloc[last_sh1] < highs.iloc[last_sh2] and lows.iloc[last_sl1] < lows.iloc[last_sl1]:
             score -= 2
 
     return score
@@ -930,12 +832,6 @@ def smc_score(df1h):
 # ============================================
 
 def classic_candle_score(df15):
-    """
-    تقييم بسيط للشموع على فريم التنفيذ (15m):
-    - شموع ابتلاعية
-    - شموع انعكاسية
-    - زخم
-    """
     if len(df15) < 5:
         return 0
 
@@ -953,25 +849,23 @@ def classic_candle_score(df15):
 
     score = 0
 
-    # شمعة ابتلاعية قوية
     prev_o = df15["open"].iloc[-2]
     prev_c = df15["close"].iloc[-2]
     prev_body = abs(prev_c - prev_o)
 
     if body > prev_body * 1.5 and body_ratio > 0.6:
         if c > o:
-            score += 2  # ابتلاعية صاعدة
+            score += 2
         else:
-            score -= 2  # ابتلاعية هابطة
+            score -= 2
 
-    # شمعة ذات ذيل طويل (رفض سعري)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
 
     if lower_wick > body * 1.5:
-        score += 1  # رفض هبوط (إيجابي)
+        score += 1
     if upper_wick > body * 1.5:
-        score -= 1  # رفض صعود (سلبي)
+        score -= 1
 
     return score
 
@@ -983,7 +877,6 @@ def trade_levels(price, atr_val, side):
     if atr_val is None or np.isnan(atr_val) or atr_val == 0:
         return None, None, None, None
 
-    # استخدام ATR أكثر تحفظاً
     risk_mult = 1.8
     reward_mult = 4.5
 
@@ -1005,9 +898,6 @@ def trade_levels(price, atr_val, side):
 # ============================================
 
 def probability_score(score):
-    """
-    تحويل مجموع النقاط إلى نسبة نجاح تقريبية.
-    """
     base = 65
     prob = base + abs(score) * 2.5
     if prob > 96:
@@ -1021,13 +911,6 @@ def probability_score(score):
 # ============================================
 
 async def websocket_aggtrades():
-    """
-    WebSocket لتجميع AggTrades لكل عملة وبناء Cluster Delta كامل:
-    - Bid/Ask per trade
-    - Delta per price level
-    - CVD (Cumulative Volume Delta)
-    - Imbalance / Absorption / Aggression
-    """
     streams = "/".join([s.lower() + "@aggTrade" for s in SYMBOLS])
     url = f"wss://fstream.binance.com/stream?streams={streams}"
 
@@ -1042,35 +925,28 @@ async def websocket_aggtrades():
                         symbol = payload.get("s")
                         price = float(payload.get("p", 0))
                         qty = float(payload.get("q", 0))
-                        is_buyer_maker = payload.get("m", True)  # True = sell aggressor
+                        is_buyer_maker = payload.get("m", True)
 
                         if not symbol or price <= 0 or qty <= 0:
                             continue
 
-                        # تحديد الشمعة الحالية (على فريم 1m تقريباً)
-                        ts = int(payload.get("T", 0)) // 60000  # candle id بالدقيقة
+                        ts = int(payload.get("T", 0)) // 60000
 
-                        # تهيئة الكلاستر للرمز
                         if symbol not in cluster_footprint:
                             cluster_footprint[symbol] = {}
                         if ts not in cluster_footprint[symbol]:
                             cluster_footprint[symbol][ts] = {}
 
-                        # تقريب السعر لمستوى (Tick Cluster)
                         price_level = round(price, 2)
 
                         if price_level not in cluster_footprint[symbol][ts]:
                             cluster_footprint[symbol][ts][price_level] = {"bid": 0.0, "ask": 0.0}
 
-                        # Aggressive buyer = taker buy = m=False
                         if is_buyer_maker:
-                            # Aggressive seller → bid volume
                             cluster_footprint[symbol][ts][price_level]["bid"] += qty
                         else:
-                            # Aggressive buyer → ask volume
                             cluster_footprint[symbol][ts][price_level]["ask"] += qty
 
-                        # تحديث CVD
                         if symbol not in cluster_cache:
                             cluster_cache[symbol] = {"cvd": 0.0, "last_update": time.time()}
 
@@ -1085,14 +961,6 @@ async def websocket_aggtrades():
             await asyncio.sleep(5)
 
 def cluster_delta_score(symbol: str):
-    """
-    حساب Score للكلاستر السعري (A2 Full):
-    - Delta per price level
-    - Imbalance
-    - Absorption
-    - CVD trend
-    يعيد قيمة تقريبية من -10 إلى +10
-    """
     if symbol not in cluster_footprint or symbol not in cluster_cache:
         return 0
 
@@ -1100,7 +968,6 @@ def cluster_delta_score(symbol: str):
     if not fp:
         return 0
 
-    # آخر شمعة كلاستر
     last_candle_id = max(fp.keys())
     levels = fp[last_candle_id]
 
@@ -1121,33 +988,28 @@ def cluster_delta_score(symbol: str):
         if bid + ask == 0:
             continue
 
-        # Imbalance قوي على مستوى السعر
         imbalance = (ask - bid) / (ask + bid)
 
         if imbalance > 0.6:
-            strong_imbalance += 1  # ضغط شراء قوي
+            strong_imbalance += 1
         elif imbalance < -0.6:
-            strong_imbalance -= 1  # ضغط بيع قوي
+            strong_imbalance -= 1
 
-        # Absorption: حجم كبير على جانب واحد مع عدم تحرك السعر كثيراً (تقريبي)
         if bid > ask * 3 and ask > 0:
-            absorption_points -= 1  # امتصاص شراء (ضغط بيعي مخفي)
+            absorption_points -= 1
         if ask > bid * 3 and bid > 0:
-            absorption_points += 1  # امتصاص بيع (ضغط شرائي مخفي)
+            absorption_points += 1
 
     if total_bid + total_ask == 0:
         return 0
 
-    # Delta عام
     delta_total = total_ask - total_bid
     delta_ratio = delta_total / (total_ask + total_bid)
 
-    # CVD
     cvd_val = cluster_cache[symbol]["cvd"]
 
     score = 0
 
-    # تأثير الدلتا العامة
     if delta_ratio > 0.3:
         score += 3
     elif delta_ratio > 0.1:
@@ -1157,19 +1019,14 @@ def cluster_delta_score(symbol: str):
     elif delta_ratio < -0.1:
         score -= 1
 
-    # تأثير الـ Imbalance
     score += strong_imbalance
-
-    # تأثير الـ Absorption
     score += absorption_points
 
-    # تأثير CVD (تقريبي)
     if cvd_val > 0:
         score += 2
     elif cvd_val < 0:
         score -= 2
 
-    # حصر النتيجة بين -10 و +10
     if score > 10:
         score = 10
     if score < -10:
@@ -1204,10 +1061,10 @@ def build_reason_text(
     # اتجاه الفريمات
     parts.append(
         f"توافق واضح بين الإطارات الزمنية حيث يظهر على الفريم اليومي اتجاه "
-        f"{'صاعد' if trend_d=='bullish' else 'هابط' if trend_d=='bearish' else 'متذبذب'} "
+        f"{'صاعد' if trend_d == 'bullish' else 'هابط' if trend_d == 'bearish' else 'متذبذب'} "
         f"وعلى فريم 4 ساعات اتجاه "
-        f"{'صاعد' if trend_4h=='bullish' else 'هابط' if trend_4h=='bearish' else 'متذبذب'} "
-        f"مع انسجام ملحوظ على فريم الساعة و 15 دقيقة."
+        f"{'صاعد' if trend_4h == 'bullish' else 'هابط' if trend_4h == 'bearish' else 'متذبذب'} "
+        f"مع انسجام ملحوظ على فريم الساعة و15 دقيقة."
     )
 
     # SMC
@@ -1230,19 +1087,19 @@ def build_reason_text(
     if classic_score > 0:
         parts.append("الشموع الأخيرة على فريم التنفيذ تظهر ابتلاعًا أو رفضًا سعريًا واضحًا يدعم سيناريو الصفقة.")
     elif classic_score < 0:
-        parts.append("الشموع الأخيرة تعكس تذبذبًا ورفضًا سعريًا عند مستويات حساسة، ما يعزز فكرة الانعكاس المحتمل.")
+        parts.append("الشموع الأخيرة تعكس تذبذبًا ورفضًا سعريًا عند مستويات حساسة، مما يعزز فكرة الانعكاس المحتمل.")
 
     # سيولة دفتر الأوامر
     if ob_imb > 0 or liq_score > 0:
         parts.append("توزيع السيولة في دفتر الأوامر يميل لصالح الاتجاه المقترح مع تكدس أوامر مؤسسية بالقرب من مناطق الدخول.")
     elif ob_imb < 0 or liq_score < 0:
-        parts.append("توزيع السيولة يظهر ضغطًا من الجانب المعاكس، ما يجعل إدارة المخاطرة في هذه الصفقة أكثر أهمية.")
+        parts.append("توزيع السيولة يظهر ضغطًا من الجانب المعاكس، مما يجعل إدارة المخاطرة في هذه الصفقة أكثر أهمية.")
 
     # MM Model
     if mm == "discount" and side == "long":
-        parts.append("السعر يتحرك في منطقة خصم (Discount) بالنسبة للمدى السعري الأخير، ما يجعل الشراء من هذه المستويات منطقيًا.")
+        parts.append("السعر يتحرك في منطقة خصم (Discount) بالنسبة للمدى السعري الأخير، مما يجعل الشراء من هذه المستويات منطقيًا.")
     if mm == "premium" and side == "short":
-        parts.append("السعر يتحرك في منطقة مبالغة سعرية (Premium) بالنسبة للمدى السعري الأخير، ما يجعل البيع من هذه المستويات منطقيًا.")
+        parts.append("السعر يتحرك في منطقة مبالغة سعرية (Premium) بالنسبة للمدى السعري الأخير، مما يجعل البيع من هذه المستويات منطقيًا.")
 
     # Cluster Delta A2 FULL
     if cluster_score > 2 and side == "long":
@@ -1250,19 +1107,19 @@ def build_reason_text(
     elif cluster_score < -2 and side == "short":
         parts.append("تدفقات أوامر البيع على مستوى الكلاستر (Delta / CVD) تدعم استمرار الهبوط من هذه المناطق.")
     elif abs(cluster_score) <= 2:
-        parts.append("توزيع أوامر الكلاستر متوازن نسبياً، ما يجعل القرار يعتمد أكثر على هيكل السعر والفريمات الأكبر.")
+        parts.append("توزيع أوامر الكلاستر متوازن نسبيًا، مما يجعل القرار يعتمد أكثر على هيكل السعر والفريمات الأكبر.")
 
     # RSI / Divergence
     if side == "long":
         if rsi_val <= 30:
             parts.append("مؤشر RSI في منطقة تشبع بيعي مما يدعم سيناريو الارتداد الصاعد من هذه المستويات.")
         if div == "bullish":
-            parts.append("يوجد دايفرجنس شرائي واضح بين السعر و RSI يعزز احتمالية الانعكاس للأعلى.")
+            parts.append("يوجد دايفرجنس شرائي واضح بين السعر وRSI يعزز احتمالية الانعكاس للأعلى.")
     else:
         if rsi_val >= 65:
             parts.append("مؤشر RSI في منطقة تشبع شرائي مما يدعم سيناريو التصحيح الهابط من هذه المستويات.")
         if div == "bearish":
-            parts.append("يوجد دايفرجنس بيعي واضح بين السعر و RSI يعزز احتمالية الانعكاس للأسفل.")
+            parts.append("يوجد دايفرجنس بيعي واضح بين السعر وRSI يعزز احتمالية الانعكاس للأسفل.")
 
     return " ".join(parts)
 
