@@ -1628,7 +1628,7 @@ async def analysis(update, context):
 def ping():
     return {"status": "alive"}
 
-@app_api.websocket("/ws")
+@app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     try:
