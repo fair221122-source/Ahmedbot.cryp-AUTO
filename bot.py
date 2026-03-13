@@ -29,11 +29,15 @@ import websockets
 # -------------------------
 app = FastAPI()
 
+# 🔥 تمت إضافة /ping هنا فقط — بدون أي تعديل آخر
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
+
 @app.get("/")
 def home():
     return {"status": "running"}
-
-
+    
 # -------------------------
 # Telegram Webhook Section
 # -------------------------
