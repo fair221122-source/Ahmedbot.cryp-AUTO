@@ -1645,14 +1645,16 @@ async def handle(update, context):
 # MAIN
 # ============================================
 
-# ⭐ تشغيل FastAPI في ثريد منفصل
-threading.Thread(target=run_api).start()
-
-# ⭐ تشغيل بوت التليجرام + تفعيل الويبهوك
-async def start_bot():
+# ⭐ تشغيل بوت التليجرام + تفعيل الويبهوك عند بدء FastAPI
+@app.on_event("startup")
+async def start_bot_event():
     await telegram_app.initialize()
     await telegram_app.start()
     await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
 
+# ⭐ تشغيل FastAPI بشكل صحيح على Fly.io
+def run_api():
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 if __name__ == "__main__":
-    asyncio.run(start_bot())
+    run_api()
