@@ -46,7 +46,8 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")   # التوكن من البيئة
 
 # إنشاء تطبيق التليجرام
 telegram_app = Application.builder().token(TOKEN).build()
-
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 # مسار الويبهوك
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -66,7 +67,6 @@ async def start_bot():
     await telegram_app.initialize()
     await telegram_app.start()
 
-threading.Thread(target=lambda: asyncio.run(start_bot())).start()
 
 # ============================================
 # GLOBAL CONFIG
@@ -1611,7 +1611,6 @@ async def analysis(update, context):
 # FASTAPI APP
 # ============================================
 
-app_api = FastAPI()
 
 @app_api.get("/ping")
 def ping():
@@ -1794,10 +1793,5 @@ def main():
 
 
 if __name__ == "__main__":
-    import uvicorn
-    # 1. تشغيل المهام الخلفية (BOOT) داخل الـ loop الخاص بالبوت
-    telegram_app.job_queue.run_once(lambda context: asyncio.create_task(BOOT(telegram_app)), 1)
-    # 2. تشغيل السيرفر في Thread منفصل لفتح البورت 8080 فوراً
-    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8080), daemon=True).start()
-    # 3. تشغيل البوت (هو الذي سيقود الـ Loop الرئيسي)
-
+    threading.Thread(target=run_api).start()
+    asyncio.run(start_bot())
