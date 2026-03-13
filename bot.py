@@ -1777,30 +1777,14 @@ async def handle(update, context):
 # MAIN
 # ============================================
 
-def main():
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
+# ⭐ تشغيل FastAPI في ثريد منفصل
+threading.Thread(target=run_api).start()
 
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(BOOT(application))
-
-    return application
-
+# ⭐ تشغيل بوت التليجرام + تفعيل الويبهوك
+async def start_bot():
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
 
 if __name__ == "__main__":
-    # تشغيل FastAPI
-    threading.Thread(target=run_api).start()
-
-    # تشغيل بوت التليجرام + تفعيل الويبهوك
-    app_instance = main()
-
-    asyncio.get_event_loop().run_until_complete(app_instance.initialize())
-    asyncio.get_event_loop().run_until_complete(app_instance.start())
-    asyncio.get_event_loop().run_until_complete(
-        app_instance.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
-    )
+    asyncio.run(start_bot())
