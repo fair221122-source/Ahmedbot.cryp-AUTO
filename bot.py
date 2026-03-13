@@ -1771,27 +1771,24 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # أوامر
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    # رسائل نصية
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle)
-    )
-
-    # -------------------------
-    # 1. تشغيل المهام الخلفية (WebSockets + Auto Scan + Pending Monitor)
-    # -------------------------
     loop = asyncio.get_event_loop()
     loop.create_task(BOOT(application))
 
-    # -------------------------
-    # 2. تشغيل بوت التليجرام (Polling)
-    # -------------------------
-    # ملاحظة: run_polling هي دالة "حاجزة" (Blocking)، لذا نتركها كآخر شيء في main
-    application.run_polling()
+    return application
 
 
 if __name__ == "__main__":
+    # تشغيل FastAPI
     threading.Thread(target=run_api).start()
-    asyncio.run(start_bot())
+
+    # تشغيل بوت التليجرام + تفعيل الويبهوك
+    app_instance = main()
+
+    asyncio.get_event_loop().run_until_complete(app_instance.initialize())
+    asyncio.get_event_loop().run_until_complete(app_instance.start())
+    asyncio.get_event_loop().run_until_complete(
+        app_instance.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
+    )
