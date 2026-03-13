@@ -1649,25 +1649,12 @@ async def handle(update, context):
 
 @app.on_event("startup")
 async def start_bot_event():
-    # تهيئة البوت وتشغيله
     await telegram_app.initialize()
     await telegram_app.start()
-    
-    # ربط البوت بالرابط الخاص بـ Fly.io
     await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
-    
-    # تشغيل "قلب" البوت (الأسعار، الكلاستر، المراقبة الآلية)
     asyncio.create_task(BOOT(telegram_app))
     print("🤖 Bot and background tasks are starting...")
 
 if __name__ == "__main__":
-    import uvicorn
-    import os
-    
-    # التأكد من جلب البورت من إعدادات Fly.io
     port_env = int(os.environ.get("PORT", 8080))
-    
-    print(f"🚀 Starting server on 0.0.0.0:{port_env}")
-    
-    # تشغيل الكائن app مباشرة لضمان أن السيرفر "يسمع" للبورت
     uvicorn.run(app, host="0.0.0.0", port=port_env)
