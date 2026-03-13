@@ -1662,11 +1662,12 @@ async def start_bot_event():
 
 if __name__ == "__main__":
     import uvicorn
-    # نستخدم "bot:app" لأن اسم ملفك هو bot.py
-    # uvicorn سيبحث داخل ملف bot عن الكائن app الخاص بـ FastAPI
-    uvicorn.run(
-        "bot:app", 
-        host="0.0.0.0", 
-        port=int(os.environ.get("PORT", 8080)),
-        reload=False
-    )
+    import os
+    
+    # التأكد من جلب البورت من إعدادات Fly.io
+    port_env = int(os.environ.get("PORT", 8080))
+    
+    print(f"🚀 Starting server on 0.0.0.0:{port_env}")
+    
+    # تشغيل الكائن app مباشرة لضمان أن السيرفر "يسمع" للبورت
+    uvicorn.run(app, host="0.0.0.0", port=port_env)
