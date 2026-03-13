@@ -1794,5 +1794,6 @@ def main():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
+    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8080), daemon=True).start()
+    asyncio.run(BOOT(telegram_app))
+    telegram_app.run_polling(drop_pending_updates=True)
