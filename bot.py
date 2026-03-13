@@ -1656,5 +1656,17 @@ async def start_bot_event():
     print("🤖 Bot and background tasks are starting...")
 
 if __name__ == "__main__":
+    import uvicorn
+    import os
+    
     port_env = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port_env)
+    
+    # استخدام "bot:app" بدلاً من الكائن app مباشرة
+    # هذا يحل مشكلة تجمد السيرفر عند البدء (Startup Freeze)
+    uvicorn.run(
+        "bot:app", 
+        host="0.0.0.0", 
+        port=port_env, 
+        workers=1, 
+        log_level="info"
+    )
