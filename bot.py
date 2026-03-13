@@ -1645,16 +1645,28 @@ async def handle(update, context):
 # MAIN
 # ============================================
 
-# ⭐ تشغيل بوت التليجرام + تفعيل الويبهوك عند بدء FastAPI
+# --- الجزء المستبدل بالكامل ---
+
 @app.on_event("startup")
 async def start_bot_event():
+    # تهيئة البوت وتشغيله
     await telegram_app.initialize()
     await telegram_app.start()
+    
+    # ربط البوت بالرابط الخاص بـ Fly.io
     await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
-
-# ⭐ تشغيل FastAPI بشكل صحيح على Fly.io
-def run_api():
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    
+    # تشغيل "قلب" البوت (الأسعار، الكلاستر، المراقبة الآلية)
+    asyncio.create_task(BOOT(telegram_app))
+    print("🤖 Bot and background tasks are starting...")
 
 if __name__ == "__main__":
-    run_api()
+    import uvicorn
+    # نستخدم "bot:app" لأن اسم ملفك هو bot.py
+    # uvicorn سيبحث داخل ملف bot عن الكائن app الخاص بـ FastAPI
+    uvicorn.run(
+        "bot:app", 
+        host="0.0.0.0", 
+        port=int(os.environ.get("PORT", 8080)),
+        reload=False
+    )
