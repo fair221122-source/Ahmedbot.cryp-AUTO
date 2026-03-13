@@ -1795,5 +1795,4 @@ def main():
 
 if __name__ == "__main__":
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    uvicorn.run("bot:app", host="0.0.0.0", port=8080)
-    
+    app.run(host="0.0.0.0", port=8080)
