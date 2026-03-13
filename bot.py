@@ -25,11 +25,10 @@ from fastapi import FastAPI, WebSocket, Request
 import websockets
 
 # -------------------------
-# FastAPI + Port for Render
+# FastAPI
 # -------------------------
 app = FastAPI()
 
-# 🔥 تمت إضافة /ping هنا فقط — بدون أي تعديل آخر
 @app.get("/ping")
 async def ping():
     return {"status": "alive"}
@@ -37,27 +36,24 @@ async def ping():
 @app.get("/")
 def home():
     return {"status": "running"}
-    
+
 # -------------------------
 # Telegram Webhook Section
 # -------------------------
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")   # التوكن من البيئة
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# 1) تعريف الدوال أولاً
 async def start(update: Update, context):
     await update.message.reply_text("مرحبا بك! البوت يعمل الآن.")
 
 async def handle(update: Update, context):
     await update.message.reply_text("تم استلام رسالتك.")
 
-# 2) إنشاء تطبيق التليجرام
 telegram_app = Application.builder().token(TOKEN).build()
 
-# 3) إضافة الهاندلرز
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-# مسار الويبهوك
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
@@ -65,21 +61,35 @@ async def webhook(request: Request):
     await telegram_app.process_update(update)
     return {"ok": True}
 
+# -------------------------
+# WebSocket (تم إصلاح الخطأ هنا)
+# -------------------------
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            data = await ws.receive_text()
+            await ws.send_text(f"Message: {data}")
+    except Exception:
+        await ws.close()
+
+# -------------------------
+# تشغيل FastAPI
+# -------------------------
 def run_api():
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-# ⭐ تشغيل FastAPI
 threading.Thread(target=run_api).start()
 
-# ⭐ تشغيل بوت التليجرام (Webhook)
-async def start_bot():
+# -------------------------
+# تشغيل بوت التليجرام عند بدء FastAPI
+# -------------------------
+@app.on_event("startup")
+async def start_bot_event():
     await telegram_app.initialize()
     await telegram_app.start()
     await telegram_app.bot.set_webhook("https://ahmedbot-cryp-auto.fly.dev/webhook")
-
-
-if __name__ == "__main__":
-    asyncio.run(start_bot())
 # ============================================
 # GLOBAL CONFIG
 # ============================================
