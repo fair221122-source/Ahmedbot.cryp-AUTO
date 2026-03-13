@@ -44,8 +44,17 @@ def home():
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")   # التوكن من البيئة
 
-# إنشاء تطبيق التليجرام
+# 1) تعريف الدوال أولاً
+async def start(update: Update, context):
+    await update.message.reply_text("مرحبا بك! البوت يعمل الآن.")
+
+async def handle(update: Update, context):
+    await update.message.reply_text("تم استلام رسالتك.")
+
+# 2) إنشاء تطبيق التليجرام
 telegram_app = Application.builder().token(TOKEN).build()
+
+# 3) إضافة الهاندلرز
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 # مسار الويبهوك
