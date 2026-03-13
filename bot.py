@@ -1794,6 +1794,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # 1. تشغيل السيرفر في Thread منفصل لفتح البورت 8080 فوراً
     threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8080), daemon=True).start()
-    asyncio.run(BOOT(telegram_app))
-    telegram_app.run_polling(drop_pending_updates=True)
+    # 2. تشغيل البوت والمهام الخلفية (التي تعتمد على asyncio)
+    telegram_app.run_polling(stop_signals=None)
