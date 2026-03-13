@@ -1642,10 +1642,23 @@ async def handle(update, context):
         await update.message.reply_text(msg, reply_markup=keyboard)
 
 # ============================================
-# MAIN
+# NEW: WEBHOOK RECEIVER (استلام الرسائل)
 # ============================================
 
-# --- الجزء المستبدل بالكامل ---
+@app.post("/webhook")
+async def webhook_handler(request: Request):
+    try:
+        data = await request.json()
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+        return {"ok": False}
+
+# ============================================
+# MAIN
+# ============================================
 
 @app.on_event("startup")
 async def start_bot_event():
@@ -1656,13 +1669,9 @@ async def start_bot_event():
     print("🤖 Bot and background tasks are starting...")
 
 if __name__ == "__main__":
-    import uvicorn
-    import os
-    
+    # تم حذف الـ imports هنا لأنها موجودة في بداية الملف
     port_env = int(os.environ.get("PORT", 8080))
     
-    # استخدام "bot:app" بدلاً من الكائن app مباشرة
-    # هذا يحل مشكلة تجمد السيرفر عند البدء (Startup Freeze)
     uvicorn.run(
         "bot:app", 
         host="0.0.0.0", 
@@ -1670,3 +1679,4 @@ if __name__ == "__main__":
         workers=1, 
         log_level="info"
     )
+
