@@ -1624,7 +1624,7 @@ async def analysis(update, context):
 # ============================================
 
 
-@app_api.get("/ping")
+@app.get("/ping")
 def ping():
     return {"status": "alive"}
 
