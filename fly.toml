@@ -1,15 +1,15 @@
 app = "ahmedbot-cryp-auto"
 primary_region = "iad"
 
-[build]
-  command = "python bot.py"
-
 [env]
   PORT = "8080"
 
 [[services]]
   internal_port = 8080
   protocol = "tcp"
+  # لضمان عدم توقف البوت عن العمل تلقائياً
+  auto_stop_machines = false 
+  auto_start_machines = true
 
   [[services.ports]]
     port = 80
@@ -18,3 +18,9 @@ primary_region = "iad"
   [[services.ports]]
     port = 443
     handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "2s"
+    method = "get"
+    path = "/"
