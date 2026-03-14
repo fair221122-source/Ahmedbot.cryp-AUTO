@@ -10,4 +10,5 @@ COPY . .
 
 ENV PORT=8080
 
-CMD ["python", "bot.py"]
+# استبدل السطر الأخير بهذا
+CMD ["uvicorn", "bot:app", "--host", "0.0.0.0", "--port", "8080"]
