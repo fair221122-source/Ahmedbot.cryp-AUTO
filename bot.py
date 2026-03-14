@@ -1,5 +1,3 @@
-import nest_asyncio
-nest_asyncio.apply()
 import os
 import asyncio
 import json
@@ -191,9 +189,4 @@ async def websocket_price_stream():
 # ============================================
 # EXECUTION (The Correct Way for Fly.io)
 # ============================================
-if __name__ == "__main__":
-    # Fly.io يمرر المنفذ عبر متغير PORT، والافتراضي 8080
-    port = int(os.environ.get("PORT", 8080))
-    # مهم جداً: استدعاء التطبيق كـ "filename:app" وليس تمرير الكائن مباشرة
-    uvicorn.run("bot:app", host="0.0.0.0", port=port, workers=1)
 
