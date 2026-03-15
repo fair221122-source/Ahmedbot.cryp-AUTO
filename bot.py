@@ -82,7 +82,28 @@ redis.set("active_chats", json.dumps(list(active_chats)))
 
 keyboard = ReplyKeyboardMarkup(
     [["صفقات", "تحليل"]],
-    resize_keyboard=True
+    resize_keBINANCE_APIS = [
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com"
+]
+
+
+# كاشات عامة
+price_cache = {}
+orderbook_cache = {}
+liquidity_map = {}
+last_signal_time_manual = {}   # للصفقات اليدوية (أمر "صفقات")
+last_signal_time_auto = {}     # للصفقات الآلية (الفحص كل 10 دقائق)
+
+klines_cache = {}
+KLINES_TTL = 60  # ثانية
+
+# Cluster Delta caches
+cluster_cache = {}          # {symbol: {"cvd": float, "last_update": ts}}
+cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask": y}}}}
+yboard=True
 )
 
 # ============================================
