@@ -1327,7 +1327,7 @@ def evaluate_signal(symbol: str):
         return None
 
     prob = probability_score(score)
-    if prob < 70:
+    if prob < 65:
         return None
 
     live_price = price_cache.get(symbol, price)
@@ -1404,7 +1404,7 @@ def scan_market_auto():
             if not sig:
                 continue
 
-            if sig["prob"] < 70:
+            if sig["prob"] < 65:
                 continue
 
             if best is None or sig["prob"] > best["prob"]:
