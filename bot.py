@@ -922,7 +922,7 @@ def smart_mtf_analysis(df1d, df4h, df1h, df15):
     # 9) درجة التحليل النهائية (مخففة)
     # ============================
     total_score = 0
-    total_score += alignment_score * 1.5     # تخفيف الوزن
+    total_score += alignment_score * 0.9     # تخفيف الوزن
     total_score += smc * 1                   # تخفيف الوزن
     total_score += momentum * 1              # تخفيف الوزن
 
