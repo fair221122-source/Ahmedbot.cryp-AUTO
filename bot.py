@@ -1314,11 +1314,103 @@ async def pending_monitor(app: Application):
 # TELEGRAM HANDLER — تحليل (يدوي)
 # ============================================
 
+# ============================================
+# EXPECTATION ENGINE (تحليل توقع الحركة)
+# ============================================
+
+def build_coin_expectation(symbol: str, df1d, df4h, df1h, df15):
+    # اتجاهات الفريمات
+    trend_d = trend_filter(df1d)
+    trend_4h = trend_filter(df4h)
+    trend_1h = trend_filter(df1h)
+    trend_15m = trend_filter(df15)
+
+    # مؤشرات أساسية
+    rsi_val = df15["rsi"].iloc[-1]
+    atr_val = df1h["atr"].iloc[-1]
+    price = df15["close"].iloc[-1]
+
+    # SMC + FVG + فيبو + إليوت + كلاسيكي
+    smc = smc_score(df1h)
+    fib_d = fib_zone_score(df1d, "long" if trend_d == "bullish" else "short")
+    fib_4h = fib_zone_score(df4h, "long" if trend_4h == "bullish" else "short")
+    fib_1h = fib_zone_score(df1h, "long" if trend_1h == "bullish" else "short")
+    fib_total = fib_d + fib_4h + fib_1h
+    ell = elliott_phase(df4h)
+    classic = classic_candle_score(df15)
+
+    # سيولة + كلاستر + MM
+    ob_imb = orderbook_imbalance(symbol)
+    liq_score = liquidity_heatmap_score(symbol)
+    cluster = cluster_delta_score(symbol)
+    mm = market_maker_model(df4h)
+
+    # دايفرجنس
+    div = rsi_divergence(df15)
+
+    # تجميع Score عام للعملة
+    score = 0
+
+    # اتجاه الفريمات
+    if trend_d == "bullish": score += 3
+    elif trend_d == "bearish": score -= 3
+
+    if trend_4h == "bullish": score += 2
+    elif trend_4h == "bearish": score -= 2
+
+    if trend_1h == "bullish": score += 1
+    elif trend_1h == "bearish": score -= 1
+
+    # SMC + فيبو + كلاسيكي + إليوت
+    score += smc
+    score += fib_total
+    score += classic
+
+    if ell == "impulsive": score += 2
+    elif ell == "corrective": score += 1
+
+    # سيولة + كلاستر
+    score += ob_imb
+    score += liq_score
+    score += cluster
+
+    # RSI + دايفرجنس
+    if rsi_val <= 30: score += 2
+    elif rsi_val >= 70: score -= 2
+
+    if div == "bullish": score += 2
+    elif div == "bearish": score -= 2
+
+    # MM Model
+    if mm == "discount": score += 1
+    elif mm == "premium": score -= 1
+
+    # تحويل Score إلى نسبة مئوية
+    prob = probability_score(score)
+
+    # تحديد الاتجاه المتوقع
+    if score > 0:
+        direction = "صعود"
+    elif score < 0:
+        direction = "هبوط"
+    else:
+        direction = "تذبذب"
+
+    return prob, direction
+
+
+# ============================================
+# DAILY ANALYSIS (تحليل يومي كامل)
+# ============================================
+
 async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     await update.message.reply_text("جارٍ التحليل ...💱")
 
+    # تحليل الأخبار
     news_comment = analyze_news_arabic()
+
+    # أفضل 5 عملات نشاطاً
     top5 = get_top5_active()
 
     coins_analysis = []
@@ -1335,12 +1427,9 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trend_1h = trend_filter(df1h)
         trend_15m = trend_filter(df15)
 
-        last = df1h["close"].iloc[-1]
-        prev = df1h["close"].iloc[-10]
-        direction = "صعود" if last > prev else "هبوط"
-        percent = round(abs((last - prev) / max(prev, 1e-8)) * 100, 2)
-
-        expectation = f"{percent}% {direction} خلال الساعات القادمة"
+        # توقع مبني على كل التحليل الفني
+        prob, direction = build_coin_expectation(symbol, df1d, df4h, df1h, df15)
+        expectation = f"{prob}% {direction} خلال الساعات القادمة"
 
         coins_analysis.append({
             "symbol": symbol,
