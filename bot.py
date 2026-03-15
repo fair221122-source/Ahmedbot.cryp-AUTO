@@ -107,7 +107,7 @@ KLINES_TTL = 60  # ثانية
 # Cluster Delta caches
 cluster_cache = {}          # {symbol: {"cvd": float, "last_update": ts}}
 cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask": y}}}}
-yboard=True
+keyboard=True
 )
 
 # ============================================
