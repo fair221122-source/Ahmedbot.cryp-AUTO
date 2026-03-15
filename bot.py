@@ -1080,11 +1080,11 @@ def evaluate_signal(symbol: str):
 
     mm = market_maker_model(df4h)
 
-    rsi_val = df15["rsi"].iloc[-1]
-    # ✅ ATR الآن على فريم الساعة كما طلبت
-    atr_val = df1h["atr"].iloc[-1]
-    div = rsi_divergence(df15)
-    price = df15["close"].iloc[-1]
+    rsi_val = df1h["rsi"].iloc[-1]
+    # ✅ ATR الآن على فريم الساعة كما طلبت
+    atr_val = df1h["atr"].iloc[-1]
+    div = rsi_divergence(df1h)
+    price = df15["close"].iloc[-1]
 
     fib_d = fib_zone_score(df1d, "long" if trend_d == "bullish" else "short")
     fib_4h = fib_zone_score(df4h, "long" if trend_4h == "bullish" else "short")
