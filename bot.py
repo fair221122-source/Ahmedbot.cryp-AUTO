@@ -56,6 +56,10 @@ BINANCE_APIS = [
     "https://fapi2.binance.com",
     "https://fapi3.binance.com"
 ]
+# إنشاء جلسة واحدة مستمرة لكل طلبات البوت
+session = requests.Session()
+# إعدادات اختيارية لتقوية الاتصال
+session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
 # كاشات عامة
 price_cache = {}
@@ -319,7 +323,7 @@ def fetch_klines(symbol: str, interval: str, limit: int = 500):
     for api in BINANCE_APIS:
         try:
             url = f"{api}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-            r = requests.get(url, timeout=5)
+            r = session.get(url, timeout=5)
             data = r.json()
 
             df = pd.DataFrame(data, columns=[
