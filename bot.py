@@ -816,30 +816,85 @@ def classic_candle_score(df15):
 
     return score
 
-# ============================================
-# TRADE LEVELS + RR
-# ============================================
+# ============================
+# Institutional SL + RR System
+# ============================
 
-def trade_levels(price, atr_val, side):
-    if atr_val is None or np.isnan(atr_val) or atr_val == 0:
+def institutional_sl(price, atr, trend_strength, last_swing, side):
+    """
+    price: سعر الدخول الحالي
+    atr: قيمة ATR على فريم الساعة
+    trend_strength: قوة الاتجاه (0 - 100)
+    last_swing: آخر قاع (للشراء) أو آخر قمة (للبيع) على فريم الساعة
+    side: "long" أو "short"
+    """
+
+    # 1) مسافة الهيكل (خلف آخر سوينغ)
+    if side == "long":
+        structure_distance = price - last_swing  # يجب أن يكون last_swing قاع تحت السعر
+    else:
+        structure_distance = last_swing - price  # يجب أن يكون last_swing قمة فوق السعر
+
+    # إذا كان السوينغ قريب جدًا، نستخدم ATR كحد أدنى
+    structure_distance = max(structure_distance, atr * 0.8)
+
+    # 2) مسافة سيولة إضافية (0.2% من السعر)
+    liquidity_buffer = price * 0.002
+
+    # 3) معامل الاتجاه (اتجاه ضعيف → SL أكبر)
+    trend_factor = 1 + (1 - trend_strength / 100)
+
+    # 4) SL النهائي (مسافة)
+    sl_distance = (structure_distance + liquidity_buffer) * trend_factor
+
+    return sl_distance
+
+
+def institutional_rr(score, trend_strength, momentum):
+    rr_min = 2.5
+    rr_max = 8.0
+
+    score_factor = score / 100
+    trend_factor = trend_strength / 100
+    momentum_factor = momentum / 100
+
+    # دمج العوامل (مثل المؤسسات)
+    rr = rr_min + (rr_max - rr_min) * (
+        0.5 * score_factor +
+        0.3 * trend_factor +
+        0.2 * momentum_factor
+    )
+
+    return max(rr_min, min(rr, rr_max))
+
+
+def trade_levels_1h(price, atr, side, score, trend_strength, momentum, last_swing):
+    """
+    هذه الدالة مخصصة لفريم الساعة 1H
+    """
+
+    if atr is None or np.isnan(atr) or atr == 0:
         return None, None, None, None
 
-    risk_mult = 1.8
-    reward_mult = 4.5
+    # 1) حساب SL الاحترافي (مسافة)
+    sl_distance = institutional_sl(price, atr, trend_strength, last_swing, side)
+
+    # 2) حساب R:R الاحترافي
+    rr = institutional_rr(score, trend_strength, momentum)
+
+    # 3) حساب TP من خلال R:R
+    tp_distance = sl_distance * rr
 
     if side == "long":
         entry = price
-        sl = price - atr_val * risk_mult
-        tp = price + atr_val * reward_mult
-        rr = (tp - entry) / max(entry - sl, 1e-8)
+        sl = price - sl_distance
+        tp = price + tp_distance
     else:
         entry = price
-        sl = price + atr_val * risk_mult
-        tp = price - atr_val * reward_mult
-        rr = (entry - tp) / max(sl - entry, 1e-8)
+        sl = price + sl_distance
+        tp = price - tp_distance
 
     return entry, sl, tp, rr
-
 # ============================================
 # PROBABILITY ENGINE
 # ============================================
