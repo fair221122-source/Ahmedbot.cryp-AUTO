@@ -363,20 +363,24 @@ def add_indicators(df):
     df["atr"] = atr(df, 14)
     return df
 
-# ============================================
-# CRYPTOPANIC NEWS (RAW)
-# ============================================
-
 def fetch_crypto_news_raw():
     if not CRYPTOPANIC_API:
+        print("⚠️ لا يوجد API KEY لموقع CryptoPanic")
         return []
 
     try:
         url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API}&public=true"
         r = session.get(url, timeout=10)
+
+        if r.status_code != 200:
+            print("⚠️ خطأ من CryptoPanic:", r.status_code, r.text)
+            return []
+
         data = r.json().get("results", [])
         return data[:5]
-    except:
+
+    except Exception as e:
+        print("⚠️ خطأ أثناء جلب أخبار CryptoPanic:", e)
         return []
 
 # ============================================
