@@ -57,7 +57,8 @@ BINANCE_APIS = [
     "https://fapi3.binance.com"
 ]
 
-session = requests.Session()
+client = httpx.AsyncClient()
+response = await client.get(url)
 
 # كاشات عامة
 price_cache = {}
@@ -77,7 +78,7 @@ cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask
 # TELEGRAM UI
 # ============================================
 
-active_chats = set()
+redis.set("active_chats", json.dumps(list(active_chats)))
 
 keyboard = ReplyKeyboardMarkup(
     [["صفقات", "تحليل"]],
