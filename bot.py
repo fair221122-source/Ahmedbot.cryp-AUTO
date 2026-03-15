@@ -815,199 +815,31 @@ def classic_candle_score(df15):
         score -= 1
 
     return score
-def smart_mtf_analysis(df1d, df4h, df1h, df15):
-    """
-    دالة تحليل ذكية متعددة الفريمات — النسخة المؤسسية
-    تُرجع تحليلًا مضبوطًا 100% لاختيار الصفقات.
-    """
 
-    analysis = {}
+# ============================================
+# TRADE LEVELS + RR
+# ============================================
 
-    # ============================
-    # 1) الاتجاه الحقيقي (Structure)
-    # ============================
-    trend_1d = trend_filter(df1d)
-    trend_4h = trend_filter(df4h)
-    trend_1h = trend_filter(df1h)
-    trend_15m = trend_filter(df15)
-
-    analysis["trend_1d"] = trend_1d
-    analysis["trend_4h"] = trend_4h
-    analysis["trend_1h"] = trend_1h
-    analysis["trend_15m"] = trend_15m
-
-    # ============================
-    # 2) Premium / Discount
-    # ============================
-    mm_1d = market_maker_model(df1d)
-    mm_4h = market_maker_model(df4h)
-    mm_1h = market_maker_model(df1h)
-
-    analysis["mm_1d"] = mm_1d
-    analysis["mm_4h"] = mm_4h
-    analysis["mm_1h"] = mm_1h
-
-    # ============================
-    # 3) RSI + تشبع
-    # ============================
-    rsi_1h = df1h["rsi"].iloc[-1]
-    rsi_15 = df15["rsi"].iloc[-1]
-
-    analysis["rsi_1h"] = rsi_1h
-    analysis["rsi_15m"] = rsi_15
-
-    if rsi_1h > 70 or rsi_15 > 70:
-        analysis["overbought"] = True
-    else:
-        analysis["overbought"] = False
-
-    if rsi_1h < 30 or rsi_15 < 30:
-        analysis["oversold"] = True
-    else:
-        analysis["oversold"] = False
-
-    # ============================
-    # 4) SMC (BOS / CHoCH / FVG / Swings)
-    # ============================
-    smc = smc_score(df1h)
-    analysis["smc_score"] = smc
-
-    # ============================
-    # 5) زخم الحركة (Momentum)
-    # ============================
-    momentum = classic_candle_score(df15)
-    analysis["momentum"] = momentum
-
-    # ============================
-    # 6) توافق الفريمات (Alignment)
-    # ============================
-    alignment_score = 0
-
-    if trend_1d == trend_4h:
-        alignment_score += 2
-    if trend_4h == trend_1h:
-        alignment_score += 2
-    if trend_1h == trend_15m:
-        alignment_score += 1
-
-    analysis["alignment"] = alignment_score
-
-    # ============================
-    # 7) تحديد الاتجاه النهائي
-    # ============================
-    if alignment_score >= 4:
-        final_trend = trend_4h
-    else:
-        final_trend = "sideways"
-
-    analysis["final_trend"] = final_trend
-
-    # ============================
-    # 8) هل السعر في منطقة دخول؟
-    # ============================
-    price = df1h["close"].iloc[-1]
-
-    if final_trend == "bullish":
-        analysis["entry_zone"] = (mm_1h == "discount") or analysis["oversold"]
-    elif final_trend == "bearish":
-        analysis["entry_zone"] = (mm_1h == "premium") or analysis["overbought"]
-    else:
-        analysis["entry_zone"] = False
-
-    # ============================
-    # 9) درجة التحليل النهائية
-    # ============================
-    total_score = 0
-    total_score += alignment_score * 2
-    total_score += smc
-    total_score += momentum
-
-    if analysis["entry_zone"]:
-        total_score += 3
-
-    analysis["total_score"] = total_score
-
-    return analysis
-
-# ============================
-# Institutional SL + RR System
-# ============================
-
-def institutional_sl(price, atr, trend_strength, last_swing, side):
-    """
-    price: سعر الدخول الحالي
-    atr: قيمة ATR على فريم الساعة
-    trend_strength: قوة الاتجاه (0 - 100)
-    last_swing: آخر قاع (للشراء) أو آخر قمة (للبيع) على فريم الساعة
-    side: "long" أو "short"
-    """
-
-    # 1) مسافة الهيكل (خلف آخر سوينغ)
-    if side == "long":
-        structure_distance = price - last_swing  # يجب أن يكون last_swing قاع تحت السعر
-    else:
-        structure_distance = last_swing - price  # يجب أن يكون last_swing قمة فوق السعر
-
-    # إذا كان السوينغ قريب جدًا، نستخدم ATR كحد أدنى
-    structure_distance = max(structure_distance, atr * 0.8)
-
-    # 2) مسافة سيولة إضافية (0.2% من السعر)
-    liquidity_buffer = price * 0.002
-
-    # 3) معامل الاتجاه (اتجاه ضعيف → SL أكبر)
-    trend_factor = 1 + (1 - trend_strength / 100)
-
-    # 4) SL النهائي (مسافة)
-    sl_distance = (structure_distance + liquidity_buffer) * trend_factor
-
-    return sl_distance
-
-
-def institutional_rr(score, trend_strength, momentum):
-    rr_min = 2.5
-    rr_max = 8.0
-
-    score_factor = score / 100
-    trend_factor = trend_strength / 100
-    momentum_factor = momentum / 100
-
-    # دمج العوامل (مثل المؤسسات)
-    rr = rr_min + (rr_max - rr_min) * (
-        0.5 * score_factor +
-        0.3 * trend_factor +
-        0.2 * momentum_factor
-    )
-
-    return max(rr_min, min(rr, rr_max))
-
-
-def trade_levels_1h(price, atr, side, score, trend_strength, momentum, last_swing):
-    """
-    هذه الدالة مخصصة لفريم الساعة 1H
-    """
-
-    if atr is None or np.isnan(atr) or atr == 0:
+def trade_levels(price, atr_val, side):
+    if atr_val is None or np.isnan(atr_val) or atr_val == 0:
         return None, None, None, None
 
-    # 1) حساب SL الاحترافي (مسافة)
-    sl_distance = institutional_sl(price, atr, trend_strength, last_swing, side)
-
-    # 2) حساب R:R الاحترافي
-    rr = institutional_rr(score, trend_strength, momentum)
-
-    # 3) حساب TP من خلال R:R
-    tp_distance = sl_distance * rr
+    risk_mult = 1.8
+    reward_mult = 4.5
 
     if side == "long":
         entry = price
-        sl = price - sl_distance
-        tp = price + tp_distance
+        sl = price - atr_val * risk_mult
+        tp = price + atr_val * reward_mult
+        rr = (tp - entry) / max(entry - sl, 1e-8)
     else:
         entry = price
-        sl = price + sl_distance
-        tp = price - tp_distance
+        sl = price + atr_val * risk_mult
+        tp = price - atr_val * reward_mult
+        rr = (entry - tp) / max(sl - entry, 1e-8)
 
     return entry, sl, tp, rr
+
 # ============================================
 # PROBABILITY ENGINE
 # ============================================
@@ -1327,7 +1159,7 @@ def evaluate_signal(symbol: str):
         return None
 
     prob = probability_score(score)
-    if prob < 55:
+    if prob < 75:
         return None
 
     live_price = price_cache.get(symbol, price)
@@ -1404,7 +1236,7 @@ def scan_market_auto():
             if not sig:
                 continue
 
-            if sig["prob"] < 55:
+            if sig["prob"] < 75:
                 continue
 
             if best is None or sig["prob"] > best["prob"]:
@@ -1459,7 +1291,7 @@ async def auto_scan_task(app: Application):
         except Exception as e:
             print("Auto scan error:", e)
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(600)
 
 # ============================================
 # PENDING ENTRY MONITOR — مراقبة الدخول المعلّق
@@ -1496,7 +1328,7 @@ async def pending_monitor(app: Application):
         except Exception as e:
             print("Pending monitor error:", e)
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(20)
 
 # ============================================
 # TELEGRAM HANDLER — تحليل (يدوي)
