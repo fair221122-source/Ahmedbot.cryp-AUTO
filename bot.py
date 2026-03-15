@@ -57,9 +57,6 @@ BINANCE_APIS = [
     "https://fapi3.binance.com"
 ]
 
-client = httpx.AsyncClient()
-response = await client.get(url)
-
 # كاشات عامة
 price_cache = {}
 orderbook_cache = {}
