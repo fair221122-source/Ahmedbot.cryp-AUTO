@@ -20,6 +20,9 @@ from telegram.ext import (
 from fastapi import FastAPI, WebSocket, Request
 import websockets
 
+active_chats = set()
+session = requests.Session()
+
 # -------------------------
 # FastAPI
 # -------------------------
@@ -43,6 +46,9 @@ CRYPTOPANIC_API = os.getenv("CRYPTOPANIC_API")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN must be set in environment variables.")
 
+# ============================
+# SYMBOLS
+# ============================
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
     "ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
@@ -50,23 +56,31 @@ SYMBOLS = [
     "ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT"
 ]
 
+# ============================
+# BINANCE APIS
+# ============================
 BINANCE_APIS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
     "https://fapi2.binance.com",
     "https://fapi3.binance.com"
 ]
-# إنشاء جلسة واحدة مستمرة لكل طلبات البوت
+
+# ============================
+# REQUESTS SESSION
+# ============================
 session = requests.Session()
-# إعدادات اختيارية لتقوية الاتصال
 session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
-# كاشات عامة
+# ============================
+# CACHES
+# ============================
 price_cache = {}
 orderbook_cache = {}
 liquidity_map = {}
-last_signal_time_manual = {}   # للصفقات اليدوية (أمر "صفقات")
-last_signal_time_auto = {}     # للصفقات الآلية (الفحص كل 10 دقائق)
+
+last_signal_time_manual = {}
+last_signal_time_auto = {}
 
 klines_cache = {}
 KLINES_TTL = 60  # ثانية
@@ -75,43 +89,14 @@ KLINES_TTL = 60  # ثانية
 cluster_cache = {}          # {symbol: {"cvd": float, "last_update": ts}}
 cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask": y}}}}
 
-# ============================================
+# ============================
 # TELEGRAM UI
-# ============================================
-
-# تعريف المتغير المطلوب لتجنب خطأ NameError
+# ============================
 active_chats = set()
 
-# تعريف الأزرار بشكل صحيح وإغلاق القوس
 keyboard = ReplyKeyboardMarkup(
     [["صفقات", "تحليل"]],
     resize_keyboard=True
-)
-
-# قائمة الـ APIs منفصلة تماماً
-BINANCE_APIS = [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com"
-]
-
-
-
-# كاشات عامة
-price_cache = {}
-orderbook_cache = {}
-liquidity_map = {}
-last_signal_time_manual = {}   # للصفقات اليدوية (أمر "صفقات")
-last_signal_time_auto = {}     # للصفقات الآلية (الفحص كل 10 دقائق)
-
-klines_cache = {}
-KLINES_TTL = 60  # ثانية
-
-# Cluster Delta caches
-cluster_cache = {}          # {symbol: {"cvd": float, "last_update": ts}}
-cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask": y}}}}
-keyboard=True
 )
 
 # ============================================
