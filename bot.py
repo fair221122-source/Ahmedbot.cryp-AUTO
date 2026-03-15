@@ -815,6 +815,120 @@ def classic_candle_score(df15):
         score -= 1
 
     return score
+    
+    def smart_mtf_analysis(df1d, df4h, df1h, df15):
+    """
+    دالة تحليل ذكية متعددة الفريمات — النسخة المؤسسية
+    تُرجع تحليلًا مضبوطًا 100% لاختيار الصفقات.
+    """
+
+    analysis = {}
+
+    # ============================
+    # 1) الاتجاه الحقيقي (Structure)
+    # ============================
+    trend_1d = trend_filter(df1d)
+    trend_4h = trend_filter(df4h)
+    trend_1h = trend_filter(df1h)
+    trend_15m = trend_filter(df15)
+
+    analysis["trend_1d"] = trend_1d
+    analysis["trend_4h"] = trend_4h
+    analysis["trend_1h"] = trend_1h
+    analysis["trend_15m"] = trend_15m
+
+    # ============================
+    # 2) Premium / Discount
+    # ============================
+    mm_1d = market_maker_model(df1d)
+    mm_4h = market_maker_model(df4h)
+    mm_1h = market_maker_model(df1h)
+
+    analysis["mm_1d"] = mm_1d
+    analysis["mm_4h"] = mm_4h
+    analysis["mm_1h"] = mm_1h
+
+    # ============================
+    # 3) RSI + تشبع
+    # ============================
+    rsi_1h = df1h["rsi"].iloc[-1]
+    rsi_15 = df15["rsi"].iloc[-1]
+
+    analysis["rsi_1h"] = rsi_1h
+    analysis["rsi_15m"] = rsi_15
+
+    if rsi_1h > 70 or rsi_15 > 70:
+        analysis["overbought"] = True
+    else:
+        analysis["overbought"] = False
+
+    if rsi_1h < 30 or rsi_15 < 30:
+        analysis["oversold"] = True
+    else:
+        analysis["oversold"] = False
+
+    # ============================
+    # 4) SMC (BOS / CHoCH / FVG / Swings)
+    # ============================
+    smc = smc_score(df1h)
+    analysis["smc_score"] = smc
+
+    # ============================
+    # 5) زخم الحركة (Momentum)
+    # ============================
+    momentum = classic_candle_score(df15)
+    analysis["momentum"] = momentum
+
+    # ============================
+    # 6) توافق الفريمات (Alignment)
+    # ============================
+    alignment_score = 0
+
+    if trend_1d == trend_4h:
+        alignment_score += 2
+    if trend_4h == trend_1h:
+        alignment_score += 2
+    if trend_1h == trend_15m:
+        alignment_score += 1
+
+    analysis["alignment"] = alignment_score
+
+    # ============================
+    # 7) تحديد الاتجاه النهائي
+    # ============================
+    if alignment_score >= 4:
+        final_trend = trend_4h
+    else:
+        final_trend = "sideways"
+
+    analysis["final_trend"] = final_trend
+
+    # ============================
+    # 8) هل السعر في منطقة دخول؟
+    # ============================
+    price = df1h["close"].iloc[-1]
+
+    if final_trend == "bullish":
+        analysis["entry_zone"] = (mm_1h == "discount") or analysis["oversold"]
+    elif final_trend == "bearish":
+        analysis["entry_zone"] = (mm_1h == "premium") or analysis["overbought"]
+    else:
+        analysis["entry_zone"] = False
+
+    # ============================
+    # 9) درجة التحليل النهائية
+    # ============================
+    total_score = 0
+    total_score += alignment_score * 2
+    total_score += smc
+    total_score += momentum
+
+    if analysis["entry_zone"]:
+        total_score += 3
+
+    analysis["total_score"] = total_score
+
+    return analysis
 
 # ============================
 # Institutional SL + RR System
