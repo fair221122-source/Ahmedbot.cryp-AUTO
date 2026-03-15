@@ -108,7 +108,7 @@ def evaluate_signal(symbol):
     if not side: return None
 
     score = smc_score(dfs["1h"])
-    atr_v = dfs["15m"]["atr"].iloc[-1]
+    atr_v = dfs["1h"]["atr"].iloc[-1]
     
     entry = p
     sl = p - atr_v*1.8 if side == "long" else p + atr_v*1.8
