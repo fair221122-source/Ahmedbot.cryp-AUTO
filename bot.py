@@ -1459,7 +1459,7 @@ async def auto_scan_task(app: Application):
         except Exception as e:
             print("Auto scan error:", e)
 
-        await asyncio.sleep(600)
+        await asyncio.sleep(30)
 
 # ============================================
 # PENDING ENTRY MONITOR — مراقبة الدخول المعلّق
