@@ -815,8 +815,7 @@ def classic_candle_score(df15):
         score -= 1
 
     return score
-    
-    def smart_mtf_analysis(df1d, df4h, df1h, df15):
+def smart_mtf_analysis(df1d, df4h, df1h, df15):
     """
     دالة تحليل ذكية متعددة الفريمات — النسخة المؤسسية
     تُرجع تحليلًا مضبوطًا 100% لاختيار الصفقات.
