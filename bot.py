@@ -75,16 +75,23 @@ cluster_footprint = {}      # {symbol: {candle_id: {price_level: {"bid": x, "ask
 # TELEGRAM UI
 # ============================================
 
-redis.set("active_chats", json.dumps(list(active_chats)))
+# تعريف المتغير المطلوب لتجنب خطأ NameError
+active_chats = set()
 
+# تعريف الأزرار بشكل صحيح وإغلاق القوس
 keyboard = ReplyKeyboardMarkup(
     [["صفقات", "تحليل"]],
-    resize_keBINANCE_APIS = [
+    resize_keyboard=True
+)
+
+# قائمة الـ APIs منفصلة تماماً
+BINANCE_APIS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
     "https://fapi2.binance.com",
     "https://fapi3.binance.com"
 ]
+
 
 
 # كاشات عامة
