@@ -1,3 +1,7 @@
+[deploy]
+  strategy = "immediate"
+
+
 app = "ahmedbot-cryp-auto"
 primary_region = "iad"
 
