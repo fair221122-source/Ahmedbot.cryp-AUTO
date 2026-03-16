@@ -4,11 +4,12 @@ import time
 import math
 import json
 import asyncio
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+from datetime import datetime, time as dt_time
+from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
 import websockets
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -33,7 +34,8 @@ SYMBOLS = [
     "TAOUSDT","ENAUSDT","FTMUSDT","HBARUSDT","ARUSDT"
 ]
 
-AUTO_TRADE_COOLDOWN_SECONDS = 60 * 60  # ساعة
+# ملاحظة: لا يعيد نفس العملة خلال ٣٠ دقيقة
+AUTO_TRADE_COOLDOWN_SECONDS = 60 * 30  # ٣٠ دقيقة
 
 app = FastAPI()
 
@@ -244,20 +246,138 @@ def estimate_direction_probability(trend: str, fvg_bias: str, momentum_score: fl
 
 
 # =========================
+# عناصر إضافية لأسلوب التداول المؤسسي SMART MONEY / ICT / ORDER FLOW
+# (Liquidity, Order Blocks, Premium/Discount, Killzones, Volume Profile, Displacement)
+# =========================
+
+def detect_liquidity_pools(klines: List[List[Any]], lookback: int = 50) -> Dict[str, Any]:
+    highs = [float(k[2]) for k in klines[-lookback:]]
+    lows = [float(k[3]) for k in klines[-lookback:]]
+    eq_highs = max(highs) if len(highs) > 0 else None
+    eq_lows = min(lows) if len(lows) > 0 else None
+    return {
+        "buy_side_liquidity": eq_highs,
+        "sell_side_liquidity": eq_lows
+    }
+
+
+def detect_order_blocks(klines: List[List[Any]]) -> Dict[str, Optional[float]]:
+    if len(klines) < 5:
+        return {"bullish_ob": None, "bearish_ob": None}
+    last = klines[-5:]
+    bullish_ob = None
+    bearish_ob = None
+    for i in range(len(last) - 2):
+        o = float(last[i][1])
+        c = float(last[i][4])
+        h = float(last[i][2])
+        l = float(last[i][3])
+        if c < o:
+            bullish_ob = l
+        if c > o:
+            bearish_ob = h
+    return {"bullish_ob": bullish_ob, "bearish_ob": bearish_ob}
+
+
+def compute_premium_discount_zone(klines: List[List[Any]]) -> Dict[str, float]:
+    closes = [float(k[4]) for k in klines]
+    if not closes:
+        return {"mid": 0.0, "premium": 0.0, "discount": 0.0}
+    high = max(closes)
+    low = min(closes)
+    mid = (high + low) / 2
+    return {
+        "mid": mid,
+        "premium": high,
+        "discount": low
+    }
+
+
+def in_killzone(now: datetime) -> bool:
+    # تقريب بسيط: جلسة لندن + نيويورك
+    t = now.time()
+    london_start = dt_time(7, 0)
+    london_end = dt_time(11, 0)
+    ny_start = dt_time(12, 0)
+    ny_end = dt_time(16, 0)
+    return (london_start <= t <= london_end) or (ny_start <= t <= ny_end)
+
+
+def compute_volume_profile_levels(klines: List[List[Any]]) -> Dict[str, Optional[float]]:
+    if not klines:
+        return {"poc": None, "vah": None, "val": None}
+    prices = [float(k[4]) for k in klines]
+    vols = [float(k[5]) for k in klines]
+    if not vols or sum(vols) == 0:
+        return {"poc": None, "vah": None, "val": None}
+    weighted = list(zip(prices, vols))
+    weighted.sort(key=lambda x: x[1], reverse=True)
+    poc = weighted[0][0]
+    total_vol = sum(vols)
+    cum = 0.0
+    vah = None
+    val = None
+    for p, v in weighted:
+        cum += v
+        ratio = cum / total_vol
+        if vah is None and ratio >= 0.7:
+            vah = p
+        if val is None and ratio >= 0.3:
+            val = p
+    return {"poc": poc, "vah": vah, "val": val}
+
+
+def detect_displacement(klines: List[List[Any]]) -> bool:
+    if len(klines) < 5:
+        return False
+    last = klines[-5:]
+    bodies = [abs(float(k[4]) - float(k[1])) for k in last]
+    avg_body = sum(bodies[:-1]) / max(len(bodies) - 1, 1)
+    last_body = bodies[-1]
+    return last_body > avg_body * 1.5
+
+
+# =========================
 # اختيار أنشط العملات
 # =========================
 
 async def get_top_active_symbols(symbols: List[str], top_n: int = 3) -> List[str]:
-    tickers = []
-    for s in symbols:
-        try:
-            t = await fetch_24h_ticker(s)
-            vol = float(t.get("quoteVolume", 0.0))
-            tickers.append((s, vol))
-        except Exception:
-            continue
-    tickers.sort(key=lambda x: x[1], reverse=True)
-    return [s for s, _ in tickers[:top_n]]
+    try:
+        # طلب واحد يجلب بيانات كل السوق
+        all_tickers = await http_get(f"{BINANCE_REST_URL}/api/v3/ticker/24hr")
+
+        # التحقق من أن البيانات قائمة صالحة
+        if not isinstance(all_tickers, list):
+            raise ValueError("Unexpected data format from Binance")
+
+        filtered = []
+        for t in all_tickers:
+            try:
+                sym = t.get("symbol")
+                if sym not in symbols:
+                    continue
+
+                vol = float(t.get("quoteVolume", 0))
+                filtered.append((sym, vol))
+
+            except Exception:
+                # تجاهل أي زوج بياناته غير صالحة
+                continue
+
+        # إذا لم نجد أي بيانات صالحة → fallback
+        if not filtered:
+            return symbols[:top_n]
+
+        # ترتيب حسب حجم التداول
+        filtered.sort(key=lambda x: x[1], reverse=True)
+
+        # إعادة أفضل top_n
+        return [s for s, _ in filtered[:top_n]]
+
+    except Exception as e:
+        print(f"Error fetching top symbols: {e}")
+        # fallback آمن
+        return symbols[:top_n]
 
 
 # =========================
@@ -283,14 +403,19 @@ def compute_institutional_levels(
         sl = entry_price - sl_distance if atr > 0 else entry_price * 0.99
 
     # R:R بين 2.5 و 7 حسب قوة الاتجاه/الزخم
-    base_rr = 2.5
-    if abs(momentum_score) > 10:
-        base_rr = 3.5
-    if abs(momentum_score) > 20:
-        base_rr = 4.5
-    if abs(momentum_score) > 30:
-        base_rr = 6.0
-    rr = max(2.5, min(7.0, base_rr))
+    momentum = abs(momentum_score)
+    if momentum < 8:
+        rr = 2.5
+    elif momentum < 15:
+        rr = 3.5
+    elif momentum < 25:
+        rr = 4.5
+    elif momentum < 35:
+        rr = 5.5
+    elif momentum < 45:
+        rr = 6.0
+    else:
+        rr = 7.0
 
     tp_distance = sl_distance * rr
 
@@ -310,7 +435,7 @@ def compute_institutional_levels(
 
 
 # =========================
-# منع تكرار نفس العملة خلال ساعة
+# منع تكرار نفس العملة خلال ٣٠ دقيقة
 # =========================
 
 def can_open_auto_trade(symbol: str) -> bool:
@@ -357,7 +482,7 @@ def build_manual_trade_message(
     color = "🟢" if side == "buy" else "🔴"
     type_text = "معلّق" if is_pending else "فوري"
 
-    msg = ""
+    msg = "\u202B"
     if rank == 1:
         msg += "أفضل صفقتين في السوق حاليا:\n"
     msg += "-------------------------------------------\n"
@@ -385,7 +510,7 @@ def build_auto_trade_message(
     color = "🟢" if side == "buy" else "🔴"
     type_text = "معلّق" if is_pending else "فوري"
 
-    msg = "⏰ فحص آلي — فرصة جديدة\n"
+    msg = "\u202B" + "⏰ فحص آلي — فرصة جديدة\n"
     msg += "------------------------------------------\n"
     msg += f"🎯 {symbol} — {color} ({type_text})\n"
     msg += f"{side_tag}\n"
@@ -400,18 +525,20 @@ def build_auto_trade_message(
 
 
 def build_pending_reminder_message(symbol: str, mode: str = "آلي") -> str:
-    return (
+    msg = "\u202B"
+    msg += (
         f"تأكيد الصفقة المعلقة ({mode})\n"
         f"#{symbol}\n\n"
         "السعر وصل منطقة الدخول المقترحة، خذ نظرة و قرر."
     )
+    return msg
 
 
 def build_analysis_message_full(
     news: str,
     analyses: List[Dict[str, Any]]
 ) -> str:
-    msg = "التحليل اليومي لسوق الكريبتو حسب بيانات السوق والأخبار الواردة من موقع CryptoPanic\n"
+    msg = "\u202B" + "التحليل اليومي لسوق الكريبتو حسب بيانات السوق والأخبار الواردة من موقع CryptoPanic\n"
     msg += "-------------------------------------------\n"
     if "لا توجد أخبار" in news or "خطأ" in news:
         msg += "لا توجد أخبار مؤثرة حالياً.\n"
@@ -448,18 +575,25 @@ def build_analysis_message_full(
         else:
             t15m = "زخم متوازن على فريم 15 دقيقة بدون اندفاع واضح."
 
+        if prob > 55:
+            direction_text = "استمرار الاتجاه الصاعد"
+        elif prob < 45:
+            direction_text = "استمرار الاتجاه الهابط"
+        else:
+            direction_text = "استمرار التذبذب"
+
         msg += f"{idx}) #{symbol}\n"
         msg += f"⏰ 4h: {t4h}\n"
         msg += f"🕰 1h: {t1h}\n"
         msg += f"🕒 15m: {t15m}\n"
-        msg += f"📉 التوقع: {prob:.0f}% باتجاه السيناريو الغالب خلال الساعات القادمة\n"
+        msg += f"📉 التوقع: {prob:.0f}% احتمال {direction_text} خلال الساعات القادمة\n"
         msg += "-------------------------------------------\n"
 
     return msg
 
 
 # =========================
-# تحليل عملة واحدة
+# تحليل عملة واحدة (مع عناصر SMART MONEY / ICT / ORDER FLOW)
 # =========================
 
 async def analyze_symbol(symbol: str) -> Dict[str, Any]:
@@ -489,6 +623,13 @@ async def analyze_symbol(symbol: str) -> Dict[str, Any]:
     prob = estimate_direction_probability(trend, fvg_bias, momentum_score, cvd)
     atr_1h = compute_atr(klines_1h, period=14)
 
+    # عناصر SMART MONEY / ICT / ORDER FLOW الإضافية
+    liquidity = detect_liquidity_pools(klines_4h)
+    order_blocks = detect_order_blocks(klines_4h)
+    pd_zone = compute_premium_discount_zone(klines_4h)
+    vp_levels = compute_volume_profile_levels(klines_4h)
+    displacement = detect_displacement(klines_1h)
+
     return {
         "symbol": symbol,
         "trend": trend,
@@ -496,7 +637,12 @@ async def analyze_symbol(symbol: str) -> Dict[str, Any]:
         "momentum_score": momentum_score,
         "prob": prob,
         "last_price": last_close,
-        "atr_1h": atr_1h
+        "atr_1h": atr_1h,
+        "liquidity": liquidity,
+        "order_blocks": order_blocks,
+        "premium_discount": pd_zone,
+        "volume_profile": vp_levels,
+        "displacement": displacement
     }
 
 
@@ -553,7 +699,7 @@ async def handle_analysis(chat_id: int):
             continue
 
     if not analyses:
-        await send_telegram_message(chat_id, "لم أتمكن من إجراء تحليل موثوق حالياً، يرجى المحاولة لاحقاً.", reply_markup=main_menu_keyboard())
+        await send_telegram_message(chat_id, "\u202B" + "لم أتمكن من إجراء تحليل موثوق حالياً، يرجى المحاولة لاحقاً.", reply_markup=main_menu_keyboard())
         return
 
     msg = build_analysis_message_full(news, analyses)
@@ -577,7 +723,7 @@ async def handle_trades(chat_id: int):
             continue
 
     if not analyses:
-        await send_telegram_message(chat_id, "لا توجد حالياً بيانات كافية لاستخراج صفقات موثوقة.", reply_markup=main_menu_keyboard())
+        await send_telegram_message(chat_id, "\u202B" + "لا توجد حالياً بيانات كافية لاستخراج صفقات موثوقة.", reply_markup=main_menu_keyboard())
         return
 
     # ترتيب حسب قوة الاحتمال (بعيد عن 50)
@@ -602,12 +748,9 @@ async def handle_trades(chat_id: int):
         entry_price = r["last_price"]
         levels = compute_institutional_levels(symbol, entry_price, r["atr_1h"], trend, r["momentum_score"])
 
-        # منطق الصفقة المعلقة (انحراف 1%)
-        is_pending = should_place_pending_order(
-            current_price=entry_price,
-            target_price=entry_price,
-            max_deviation=0.01
-        )
+        # منطق الصفقة المعلقة: فوري إذا السعر قريب من منطقة الدخول، وإلا معلّق
+        entry_zone = levels["entry"]
+        is_pending = not (entry_zone * 0.995 <= r["last_price"] <= entry_zone * 1.005)
 
         # سبب الدخول (مختصر وواضح)
         reason_parts = []
@@ -648,9 +791,15 @@ async def handle_trades(chat_id: int):
             manual_msgs.append(manual_msg)
             manual_count += 1
             used_symbols.add(symbol)
+
+            if is_pending and not pending_alert_sent.get(symbol, False):
+                reminder = build_pending_reminder_message(symbol, mode="يدوي")
+                await send_telegram_message(chat_id, reminder, reply_markup=main_menu_keyboard())
+                pending_alert_sent[symbol] = True
+
             continue
 
-        # صفقة آلية واحدة فقط لكل عملة خلال ساعة
+        # صفقة/صفقتان آليتان (بصيغة الفحص الآلي) مع منع التكرار خلال ٣٠ دقيقة
         if auto_count < 2 and can_open_auto_trade(symbol):
             auto_msg = build_auto_trade_message(
                 symbol=symbol,
@@ -665,8 +814,13 @@ async def handle_trades(chat_id: int):
             auto_count += 1
             used_symbols.add(symbol)
 
+            if is_pending and not pending_alert_sent.get(symbol, False):
+                reminder = build_pending_reminder_message(symbol, mode="آلي")
+                await send_telegram_message(chat_id, reminder, reply_markup=main_menu_keyboard())
+                pending_alert_sent[symbol] = True
+
     if not manual_msgs and not auto_msgs:
-        await send_telegram_message(chat_id, "لا توجد حالياً صفقات تلقائية تتوافق مع شروط الدخول المؤسسية بدون مبالغة أو تضارب.", reply_markup=main_menu_keyboard())
+        await send_telegram_message(chat_id, "\u202B" + "لا توجد حالياً صفقات تلقائية تتوافق مع شروط الدخول المؤسسية بدون مبالغة أو تضارب.", reply_markup=main_menu_keyboard())
         return
 
     # إرسال الصفقات اليدوية (أفضل صفقتين)
@@ -680,11 +834,113 @@ async def handle_trades(chat_id: int):
 
 
 # =========================
+# ملاحظات مطبقة حرفياً في منطق الفحص الآلي:
+# طيب اريده يحتوي على 100% من القائمة الحقيقية لأسلوب التداول المؤسسي 
+# كما اريد ان تعمل دالة الفحص الآلي كل ٥ دقائق والا كيف ستأتي رسالة الصفقة التلقائية أو الفحص الآلي 
+# اريد الدالة تفحص ال ٣٠ عملة كل ٥ دقائق و تشوف اذا هناك عملة مطابقة للشروط وعدت ٧٥ % نسبة حقيقية بناء على القوائم الحقيقية لأسلوب التداول المؤسسي يتم ارسلها الى التليجرام ك فحص آلي- صفقة جديدة 
+# ولا يعيد نفس العملة خلال ٣٠ دقيقة 
+# =========================
+
+AUTO_SCAN_CHAT_ID: Optional[int] = None  # يمكن ضبطه يدوياً أو من أول /start
+
+
+def institutional_conditions_met(analysis: Dict[str, Any]) -> bool:
+    trend = analysis["trend"]
+    if trend not in ["bullish", "bearish"]:
+        return False
+    if not analysis["displacement"]:
+        return False
+    liq = analysis["liquidity"]
+    if not liq["buy_side_liquidity"] and not liq["sell_side_liquidity"]:
+        return False
+    ob = analysis["order_blocks"]
+    if not ob["bullish_ob"] and not ob["bearish_ob"]:
+        return False
+    return True
+
+
+async def auto_scan_loop():
+    await asyncio.sleep(5)
+    while True:
+        try:
+            if AUTO_SCAN_CHAT_ID is not None:
+                now = datetime.utcnow()
+                if in_killzone(now):
+                    analyses: List[Tuple[str, Dict[str, Any]]] = []
+                    for s in SYMBOLS:
+                        try:
+                            res = await analyze_symbol(s)
+                            analyses.append((s, res))
+                        except Exception:
+                            continue
+
+                    for symbol, r in analyses:
+                        if r["prob"] < 75:
+                            continue
+                        if not institutional_conditions_met(r):
+                            continue
+                        if not can_open_auto_trade(symbol):
+                            continue
+
+                        side = "buy" if r["trend"] == "bullish" else "sell"
+                        levels = compute_institutional_levels(
+                            symbol,
+                            r["last_price"],
+                            r["atr_1h"],
+                            r["trend"],
+                            r["momentum_score"]
+                        )
+                        entry_zone = levels["entry"]
+                        is_pending = not (entry_zone * 0.995 <= r["last_price"] <= entry_zone * 1.005)
+
+                        reason_parts = []
+                        if r["trend"] == "bullish":
+                            reason_parts.append("اتجاه صاعد على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح.")
+                        else:
+                            reason_parts.append("اتجاه هابط على الفريمات الكبيرة مع قمم وقيعان أدنى بشكل واضح.")
+
+                        if r["fvg_bias"] == "bullish" and r["trend"] == "bullish":
+                            reason_parts.append("وجود فجوات سعرية صاعدة (FVG) على فريم 4 ساعات والساعة تدعم استمرار الحركة.")
+                        if r["fvg_bias"] == "bearish" and r["trend"] == "bearish":
+                            reason_parts.append("وجود فجوات سعرية هابطة (FVG) على فريم 4 ساعات والساعة تدعم استمرار الحركة.")
+
+                        if r["momentum_score"] > 0 and r["trend"] == "bullish":
+                            reason_parts.append("زخم إيجابي على فريم 15 دقيقة مع شموع اندفاعية في اتجاه الصفقة.")
+                        if r["momentum_score"] < 0 and r["trend"] == "bearish":
+                            reason_parts.append("زخم سلبي على فريم 15 دقيقة مع ضغط بيعي واضح في اتجاه الصفقة.")
+
+                        cvd_val = symbol_orderflow_state.get(symbol, {}).get("cvd", 0.0)
+                        if cvd_val > 0 and r["trend"] == "bullish":
+                            reason_parts.append("تدفق السيولة (CVD) يميل للشراء مما يدعم سيناريو الاستمرار.")
+                        if cvd_val < 0 and r["trend"] == "bearish":
+                            reason_parts.append("تدفق السيولة (CVD) يميل للبيع مما يدعم سيناريو الاستمرار.")
+
+                        reason_text = " ".join(reason_parts) if reason_parts else "توافق منطقي بين الاتجاه العام والزخم الحالي ومناطق السعر المهمة."
+
+                        auto_msg = build_auto_trade_message(
+                            symbol=symbol,
+                            side=side,
+                            levels=levels,
+                            prob=r["prob"],
+                            reason_text=reason_text,
+                            is_pending=is_pending
+                        )
+                        await send_telegram_message(AUTO_SCAN_CHAT_ID, auto_msg, reply_markup=main_menu_keyboard())
+                        mark_auto_trade(symbol)
+
+            # تعمل دالة الفحص الآلي كل ٥ دقائق
+            await asyncio.sleep(5 * 60)
+        except Exception:
+            await asyncio.sleep(5 * 60)
+
+
+# =========================
 # Webhook تليجرام
 # =========================
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
+    global AUTO_SCAN_CHAT_ID
     data = await request.json()
     if "message" not in data:
         return JSONResponse({"ok": True})
@@ -693,10 +949,13 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
+    if AUTO_SCAN_CHAT_ID is None:
+        AUTO_SCAN_CHAT_ID = chat_id
+
     if text == "/start":
         await send_telegram_message(
             chat_id,
-            "مرحباً، هذا البوت مبني على تحليل مؤسسي حقيقي.\n\nاختر من الأزرار:\n- تحليل\n- صفقات",
+            "\u202B" + "مرحباً، هذا البوت مبني على تحليل مؤسسي حقيقي.\n\nاختر من الأزرار:\n- تحليل\n- صفقات",
             reply_markup=main_menu_keyboard()
         )
     elif text == "تحليل":
@@ -706,7 +965,7 @@ async def telegram_webhook(request: Request):
     else:
         await send_telegram_message(
             chat_id,
-            "اختر من الأزرار:\n- تحليل\n- صفقات",
+            "\u202B" + "اختر من الأزرار:\n- تحليل\n- صفقات",
             reply_markup=main_menu_keyboard()
         )
 
@@ -714,12 +973,13 @@ async def telegram_webhook(request: Request):
 
 
 # =========================
-# تشغيل WebSocket في الخلفية
+# تشغيل WebSocket والفحص الآلي في الخلفية
 # =========================
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(run_binance_ws())
+    asyncio.create_task(auto_scan_loop())
 
 
 # =========================
@@ -728,7 +988,8 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Institutional Telegram bot running with webhook + websockets."}
+    return {"status": "ok", "message": "Institutional Telegram bot running with webhook + websockets + auto scan every 5 minutes."}
+
 
 # تشغيل FastAPI على البورت الصحيح من fly.io
 if __name__ == "__main__":
