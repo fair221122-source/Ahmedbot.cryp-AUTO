@@ -1015,7 +1015,6 @@ def institutional_rr(score, trend_strength, momentum):
     trend_factor = trend_strength / 100
     momentum_factor = momentum / 100
 
-    # دمج العوامل (مثل المؤسسات)
     rr = rr_min + (rr_max - rr_min) * (
         0.5 * score_factor +
         0.3 * trend_factor +
@@ -1023,6 +1022,31 @@ def institutional_rr(score, trend_strength, momentum):
     )
 
     return max(rr_min, min(rr, rr_max))
+
+
+def trade_levels(price, atr_val, side):
+    """
+    واجهة تستدعي trade_levels_1h
+    وتستخدم قيم افتراضية منطقية (لاحقاً نربطها بالتحليل)
+    """
+
+    # قيم افتراضية مبدئية
+    score = 60
+    trend_strength = 60
+    momentum = 50
+
+    # حساب سوينغ افتراضي قريب من السعر
+    last_swing = price * (0.995 if side == "long" else 1.005)
+
+    return trade_levels_1h(
+        price=price,
+        atr=atr_val,
+        side=side,
+        score=score,
+        trend_strength=trend_strength,
+        momentum=momentum,
+        last_swing=last_swing
+    )
 
 
 def trade_levels_1h(price, atr, side, score, trend_strength, momentum, last_swing):
@@ -1033,13 +1057,10 @@ def trade_levels_1h(price, atr, side, score, trend_strength, momentum, last_swin
     if atr is None or np.isnan(atr) or atr == 0:
         return None, None, None, None
 
-    # 1) حساب SL الاحترافي (مسافة)
     sl_distance = institutional_sl(price, atr, trend_strength, last_swing, side)
 
-    # 2) حساب R:R الاحترافي
     rr = institutional_rr(score, trend_strength, momentum)
 
-    # 3) حساب TP من خلال R:R
     tp_distance = sl_distance * rr
 
     if side == "long":
