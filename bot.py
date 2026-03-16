@@ -738,7 +738,6 @@ import asyncio
 def start_ws():
     asyncio.run(run_binance_ws())
 
-threading.Thread(target=start_ws, daemon=True).start()
 
 # تشغيل FastAPI على البورت الصحيح من fly.io
 if __name__ == "__main__":
@@ -746,4 +745,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8080))
-    )SYMBOLS = os.getenv("SYMBOLS").split(",")
+
