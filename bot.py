@@ -815,163 +815,90 @@ def classic_candle_score(df15):
         score -= 1
 
     return score
-def smart_price_action_model(df1d, df4h, df1h, df15):
-    """
-    نموذج سلوك سعري ذكي — Price Action Model
-    يحافظ على نفس مخرجات دالة أحمد، لكن بمنطق احترافي:
-    - اتجاه عام (1D + 4H)
-    - اتجاه تصحيح (1H + 15m)
-    - تحليل FVG + OB + Liquidity
-    - زخم + انديوسمنت + شموع
-    - دخول مرن على الفريمات الصغيرة
-    """
+# الاتجاه العام يتم تحديده يدويًا
+MANUAL_TREND = "bullish"   # أو bearish
 
+def smart_signal(symbol, df4h, df1h, df15):
     analysis = {}
 
     # ============================
-    # 1) الاتجاه العام (HTF)
+    # 1) الاتجاه العام (يدوي + 4H)
     # ============================
-    trend_1d = trend_filter(df1d)
     trend_4h = trend_filter(df4h)
 
-    # الاتجاه العام = ترجيح 1D ثم 4H
-    if trend_1d != "sideways":
-        htf_trend = trend_1d
-    else:
-        htf_trend = trend_4h
-
-    analysis["trend_1d"] = trend_1d
-    analysis["trend_4h"] = trend_4h
-
-    # ============================
-    # 2) اتجاه التصحيح (LTF)
-    # ============================
-    trend_1h = trend_filter(df1h)
-    trend_15m = trend_filter(df15)
-
-    # التصحيح = اختلاف الاتجاه بين HTF و LTF
-    if htf_trend == "bullish" and trend_4h == "bearish":
-        correction = "down"
-    elif htf_trend == "bearish" and trend_4h == "bullish":
-        correction = "up"
-    else:
-        correction = "none"
-
-    analysis["trend_1h"] = trend_1h
-    analysis["trend_15m"] = trend_15m
-
-    # ============================
-    # 3) Premium / Discount
-    # ============================
-    mm_1d = market_maker_model(df1d)
-    mm_4h = market_maker_model(df4h)
-    mm_1h = market_maker_model(df1h)
-
-    analysis["mm_1d"] = mm_1d
-    analysis["mm_4h"] = mm_4h
-    analysis["mm_1h"] = mm_1h
-
-    # ============================
-    # 4) RSI (تأكيد فقط)
-    # ============================
-    rsi_1h = df1h["rsi"].iloc[-1]
-    rsi_15 = df15["rsi"].iloc[-1]
-
-    analysis["rsi_1h"] = rsi_1h
-    analysis["rsi_15m"] = rsi_15
-    analysis["overbought"] = (rsi_1h > 70 or rsi_15 > 70)
-    analysis["oversold"] = (rsi_1h < 30 or rsi_15 < 30)
-
-    # ============================
-    # 5) FVG + Liquidity + OB
-    # ============================
-    fvg4 = detect_fvg(df4h)
-    fvg1 = detect_fvg(df1h)
-
-    fvg_bias = 0
-    if fvg4:
-        if fvg4[-1]["direction"] == "bullish":
-            fvg_bias += 2
-        else:
-            fvg_bias -= 2
-
-    if fvg1:
-        if fvg1[-1]["direction"] == "bullish":
-            fvg_bias += 1
-        else:
-            fvg_bias -= 1
-
-    analysis["fvg_bias"] = fvg_bias
-
-    # ============================
-    # 6) زخم الحركة (انديوسمنت + شموع)
-    # ============================
-    momentum = classic_candle_score(df15)
-    analysis["momentum"] = momentum
-
-    # ============================
-    # 7) SMC (BOS / CHoCH)
-    # ============================
-    smc = smc_score(df1h)
-    analysis["smc_score"] = smc
-
-    # ============================
-    # 8) توافق الفريمات (بدون صرامة)
-    # ============================
-    alignment = 0
-    if trend_4h == trend_1h:
-        alignment += 1
-    if trend_1h == trend_15m:
-        alignment += 1
-
-    analysis["alignment"] = alignment
-
-    # ============================
-    # 9) الاتجاه النهائي (مرن)
-    # ============================
-    if correction == "up":
-        final_trend = "bullish"
-    elif correction == "down":
-        final_trend = "bearish"
+    if MANUAL_TREND != "sideways":
+        final_trend = MANUAL_TREND
     else:
         final_trend = trend_4h
 
     analysis["final_trend"] = final_trend
 
     # ============================
-    # 10) منطقة الدخول (سلوك سعري)
+    # 2) FVG على 4H و 1H
+    # ============================
+    fvg_4h = detect_fvg(df4h)
+    fvg_1h = detect_fvg(df1h)
+
+    last_fvg_4h = fvg_4h[-1] if fvg_4h else None
+    last_fvg_1h = fvg_1h[-1] if fvg_1h else None
+
+    analysis["fvg_4h"] = last_fvg_4h
+    analysis["fvg_1h"] = last_fvg_1h
+
+    # ============================
+    # 3) زخم الشموع (1H + 15m)
+    # ============================
+    momentum_1h = classic_candle_score(df1h)
+    momentum_15 = classic_candle_score(df15)
+
+    analysis["momentum_1h"] = momentum_1h
+    analysis["momentum_15m"] = momentum_15
+
+    # ============================
+    # 4) شروط الدخول
     # ============================
     price = df1h["close"].iloc[-1]
 
-    entry_zone = False
+    long_condition = (
+        final_trend == "bullish" and
+        last_fvg_1h and last_fvg_1h["type"] == "bullish" and
+        momentum_1h > 0 and
+        momentum_15 > 0
+    )
 
-    # دخول شراء
-    if final_trend == "bullish":
-        if mm_1h == "discount" or analysis["oversold"] or fvg_bias > 0 or momentum > 0:
-            entry_zone = True
+    short_condition = (
+        final_trend == "bearish" and
+        last_fvg_1h and last_fvg_1h["type"] == "bearish" and
+        momentum_1h < 0 and
+        momentum_15 < 0
+    )
 
-    # دخول بيع
-    if final_trend == "bearish":
-        if mm_1h == "premium" or analysis["overbought"] or fvg_bias < 0 or momentum < 0:
-            entry_zone = True
+    if long_condition:
+        side = "long"
+    elif short_condition:
+        side = "short"
+    else:
+        analysis["entry_zone"] = False
+        return analysis
 
-    analysis["entry_zone"] = entry_zone
+    analysis["entry_zone"] = True
+    analysis["side"] = side
 
     # ============================
-    # 11) الدرجة النهائية (مرنة)
+    # 5) حساب SL / TP / RR
     # ============================
-    total_score = 0
-    total_score += smc * 1.2
-    total_score += momentum * 1.0
-    total_score += fvg_bias * 1.5
-    total_score += alignment * 0.8
+    atr_val = df1h["atr"].iloc[-1]
+    last_swing = df1h["low"].rolling(10).min().iloc[-1] if side == "long" else df1h["high"].rolling(10).max().iloc[-1]
 
-    if entry_zone:
-        total_score += 4
+    entry, sl, tp, rr = trade_levels(price, atr_val, side)
 
-    analysis["total_score"] = total_score
+    analysis["entry"] = entry
+    analysis["sl"] = sl
+    analysis["tp"] = tp
+    analysis["rr"] = rr
 
     return analysis
+
 
 # ============================
 # Institutional SL + RR System
