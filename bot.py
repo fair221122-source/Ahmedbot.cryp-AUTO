@@ -27,6 +27,9 @@ SYMBOLS = [
 
 AUTO_TRADE_COOLDOWN = 1800 # 30 دقيقة منع تكرار
 app = FastAPI()
+@app.get("/")
+async def health_check():
+    return {"status": "running", "bot": "AhmedBots"}
 
 # =========================
 # إدارة حالة البوت
