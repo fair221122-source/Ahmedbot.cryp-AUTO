@@ -729,15 +729,6 @@ async def startup_event():
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Institutional Telegram bot running with webhook + websockets."}
-import threading
-import uvicorn
-import os
-import asyncio
-
-# تشغيل WebSocket في Thread منفصل
-def start_ws():
-    asyncio.run(run_binance_ws())
-
 
 # تشغيل FastAPI على البورت الصحيح من fly.io
 if __name__ == "__main__":
@@ -745,4 +736,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8080))
-
+    )
