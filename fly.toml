@@ -1,6 +1,9 @@
-
 app = "ahmedbot-cryp-auto"
 primary_region = "iad"
+
+# هذا القسم هو المسؤول عن "قتل" التعليق
+[deploy]
+  strategy = "immediate"  # ينهي العملية القديمة فوراً دون انتظار
 
 [env]
   PORT = "8080"
@@ -8,10 +11,11 @@ primary_region = "iad"
 [[services]]
   internal_port = 8080
   protocol = "tcp"
-  # منع توقف البوت آلياً لضمان عمل الرادار 24/7
+  
+  # تقليل القيود للسماح للماكينة بالاستجابة
   auto_stop_machines = false 
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0 # اجعلها 0 مؤقتاً لفك التعليق ثم سنعيدها لـ 1
 
   [[services.ports]]
     port = 80
@@ -22,9 +26,8 @@ primary_region = "iad"
     handlers = ["tls", "http"]
 
   [[services.http_checks]]
-    interval = "30s"      # الفحص كل 30 ثانية بدلاً من 15
-    timeout = "5s"       # زيادة وقت انتظار الرد لـ 5 ثوانٍ
+    interval = "30s"
+    timeout = "5s"
     method = "get"
     path = "/"
-    grace_period = "60s" # إعطاء البوت دقيقة كاملة للإقلاع وجمع البيانات قبل الفحص
-    restart_limit = 0    # منع إعادة التشغيل اللانهائي إذا تأخر الرد قليلاً
+    grace_period = "2m" # زيادة مدة السماح لدقيقتين كاملتين
