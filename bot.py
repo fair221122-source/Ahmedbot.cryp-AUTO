@@ -815,28 +815,53 @@ def classic_candle_score(df15):
         score -= 1
 
     return score
-def smart_mtf_analysis(df1d, df4h, df1h, df15):
+def smart_price_action_model(df1d, df4h, df1h, df15):
     """
-    دالة تحليل ذكية متعددة الفريمات — وضع متوسط (تخفيف الصرامة للنصف)
+    نموذج سلوك سعري ذكي — Price Action Model
+    يحافظ على نفس مخرجات دالة أحمد، لكن بمنطق احترافي:
+    - اتجاه عام (1D + 4H)
+    - اتجاه تصحيح (1H + 15m)
+    - تحليل FVG + OB + Liquidity
+    - زخم + انديوسمنت + شموع
+    - دخول مرن على الفريمات الصغيرة
     """
 
     analysis = {}
 
     # ============================
-    # 1) الاتجاه الحقيقي (Structure)
+    # 1) الاتجاه العام (HTF)
     # ============================
     trend_1d = trend_filter(df1d)
     trend_4h = trend_filter(df4h)
-    trend_1h = trend_filter(df1h)
-    trend_15m = trend_filter(df15)
+
+    # الاتجاه العام = ترجيح 1D ثم 4H
+    if trend_1d != "sideways":
+        htf_trend = trend_1d
+    else:
+        htf_trend = trend_4h
 
     analysis["trend_1d"] = trend_1d
     analysis["trend_4h"] = trend_4h
+
+    # ============================
+    # 2) اتجاه التصحيح (LTF)
+    # ============================
+    trend_1h = trend_filter(df1h)
+    trend_15m = trend_filter(df15)
+
+    # التصحيح = اختلاف الاتجاه بين HTF و LTF
+    if htf_trend == "bullish" and trend_4h == "bearish":
+        correction = "down"
+    elif htf_trend == "bearish" and trend_4h == "bullish":
+        correction = "up"
+    else:
+        correction = "none"
+
     analysis["trend_1h"] = trend_1h
     analysis["trend_15m"] = trend_15m
 
     # ============================
-    # 2) Premium / Discount
+    # 3) Premium / Discount
     # ============================
     mm_1d = market_maker_model(df1d)
     mm_4h = market_maker_model(df4h)
@@ -847,87 +872,102 @@ def smart_mtf_analysis(df1d, df4h, df1h, df15):
     analysis["mm_1h"] = mm_1h
 
     # ============================
-    # 3) RSI + تشبع
+    # 4) RSI (تأكيد فقط)
     # ============================
     rsi_1h = df1h["rsi"].iloc[-1]
     rsi_15 = df15["rsi"].iloc[-1]
 
     analysis["rsi_1h"] = rsi_1h
     analysis["rsi_15m"] = rsi_15
-
     analysis["overbought"] = (rsi_1h > 70 or rsi_15 > 70)
     analysis["oversold"] = (rsi_1h < 30 or rsi_15 < 30)
 
     # ============================
-    # 4) SMC (BOS / CHoCH / FVG / Swings)
+    # 5) FVG + Liquidity + OB
     # ============================
-    smc = smc_score(df1h)
-    analysis["smc_score"] = smc
+    fvg4 = detect_fvg(df4h)
+    fvg1 = detect_fvg(df1h)
+
+    fvg_bias = 0
+    if fvg4:
+        if fvg4[-1]["direction"] == "bullish":
+            fvg_bias += 2
+        else:
+            fvg_bias -= 2
+
+    if fvg1:
+        if fvg1[-1]["direction"] == "bullish":
+            fvg_bias += 1
+        else:
+            fvg_bias -= 1
+
+    analysis["fvg_bias"] = fvg_bias
 
     # ============================
-    # 5) زخم الحركة (Momentum)
+    # 6) زخم الحركة (انديوسمنت + شموع)
     # ============================
     momentum = classic_candle_score(df15)
     analysis["momentum"] = momentum
 
     # ============================
-    # 6) توافق الفريمات (Alignment)
+    # 7) SMC (BOS / CHoCH)
     # ============================
-    alignment_score = 0
+    smc = smc_score(df1h)
+    analysis["smc_score"] = smc
 
-    if trend_1d == trend_4h:
-        alignment_score += 2
+    # ============================
+    # 8) توافق الفريمات (بدون صرامة)
+    # ============================
+    alignment = 0
     if trend_4h == trend_1h:
-        alignment_score += 2
+        alignment += 1
     if trend_1h == trend_15m:
-        alignment_score += 1
+        alignment += 1
 
-    analysis["alignment"] = alignment_score
+    analysis["alignment"] = alignment
 
     # ============================
-    # 7) الاتجاه النهائي (مخفف)
+    # 9) الاتجاه النهائي (مرن)
     # ============================
-    if alignment_score >= 2:
-        final_trend = trend_4h
+    if correction == "up":
+        final_trend = "bullish"
+    elif correction == "down":
+        final_trend = "bearish"
     else:
-        final_trend = "sideways"
+        final_trend = trend_4h
 
     analysis["final_trend"] = final_trend
 
     # ============================
-    # 8) هل السعر في منطقة دخول؟ (مخففة)
+    # 10) منطقة الدخول (سلوك سعري)
     # ============================
     price = df1h["close"].iloc[-1]
-    prev_price = df1h["close"].iloc[-2]
 
-    # السماح بالاقتراب من المنطقة ±1%
-    tolerance = price * 0.01
+    entry_zone = False
 
+    # دخول شراء
     if final_trend == "bullish":
-        entry_zone = (mm_1h == "discount") or analysis["oversold"]
-        near_zone = (mm_1h == "discount") or abs(price - prev_price) <= tolerance
+        if mm_1h == "discount" or analysis["oversold"] or fvg_bias > 0 or momentum > 0:
+            entry_zone = True
 
-    elif final_trend == "bearish":
-        entry_zone = (mm_1h == "premium") or analysis["overbought"]
-        near_zone = (mm_1h == "premium") or abs(price - prev_price) <= tolerance
+    # دخول بيع
+    if final_trend == "bearish":
+        if mm_1h == "premium" or analysis["overbought"] or fvg_bias < 0 or momentum < 0:
+            entry_zone = True
 
-    else:
-        entry_zone = False
-        near_zone = False
-
-    # دمج المنطقة + الاقتراب
-    analysis["entry_zone"] = entry_zone or near_zone
+    analysis["entry_zone"] = entry_zone
 
     # ============================
-    # 9) درجة التحليل النهائية (مخففة)
+    # 11) الدرجة النهائية (مرنة)
     # ============================
     total_score = 0
-    total_score += alignment_score * 0.9     # تخفيف الوزن
-    total_score += smc * 1                   # تخفيف الوزن
-    total_score += momentum * 1              # تخفيف الوزن
+    total_score += smc * 1.2
+    total_score += momentum * 1.0
+    total_score += fvg_bias * 1.5
+    total_score += alignment * 0.8
 
-    if analysis["entry_zone"]:
-        total_score += 3
+    if entry_zone:
+        total_score += 4
 
     analysis["total_score"] = total_score
 
