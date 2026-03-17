@@ -581,11 +581,12 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, "\n".join(lines))
 
-    async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
+async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
         lv = res["levels"]
         side_tag = "#Long" if lv["side"] == "Long" else "#Short"
         color = "🟢" if lv["side"] == "Long" else "🔴"
         header = f"⏰ فحص آلي - صفقة جديدة ({res['entry_type']})"
+
         msg = (
             f"{header}\n"
             f"{res['symbol']} {color}\n"
@@ -598,42 +599,52 @@ class InstitutionalEngine:
             f"{'-'*35}\n"
             f"📌 سلوك السعر : {res['behavior']}"
         )
+
         if res["entry_type"] == "معلّق":
-            msg += "\n🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
+            msg += "\n🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة."
             monitored_trades[res["symbol"]] = {
                 "entry": lv["entry"],
                 "chat_id": chat_id
             }
+
         open_trades[res["symbol"]] = {
             "tp": lv["tp"],
             "side": lv["side"],
             "chat_id": chat_id
         }
+
         await self.send_msg(chat_id, msg)
 
-async def send_analysis(self, chat_id: int):
+
+    async def send_analysis(self, chat_id: int):
         news = await self.fetch_news()
         focus = await self.get_top_active_symbols(limit=3)
+
         lines = [
             "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic",
             "-" * 43,
             f"الأخبار: {news}",
             "",
-            "أكثر ثلاث عملات رقمية نشطة حاليا صعود أو هبوط:",
+            "أكثر ثلاث عملات رقمية نشطة حالياً صعوداً أو هبوطاً:",
             "-" * 29
         ]
 
         for i, r in enumerate(focus, start=1):
-            res = r
-            if not res:
+            if not r:
                 continue
-            trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
+
+            trend_word = (
+                "الصاعد" if r["trend"] == "صاعد"
+                else "الهابط" if r["trend"] == "هابط"
+                else "الحالي"
+            )
+
             lines.append(
-                f"{i}) #{res['symbol']}\n"
-                f"⏰ 4h: اتجاه {res['trend']} بشكل واضح.\n"
+                f"{i}) #{r['symbol']}\n"
+                f"⏰ 4h: اتجاه {r['trend']} بشكل واضح.\n"
                 "🕰 1h: سيولة مؤسسية وحركة متزنة.\n"
                 "🕒 15m: زخم يدعم الاتجاه الحالي.\n"
-                f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه {trend_word}\n"
+                f"📉 التوقع: {r['prob']}% احتمال استمرار الاتجاه {trend_word}\n"
                 f"{'-'*43}"
             )
 
