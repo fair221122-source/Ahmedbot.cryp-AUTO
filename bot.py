@@ -623,7 +623,7 @@ class InstitutionalEngine:
             "-" * 29
         ]
         for i, r in enumerate(focus, start=1):
-    res = r
+        res = r
             if not res:
                 continue
             trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
