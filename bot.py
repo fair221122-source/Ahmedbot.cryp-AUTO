@@ -145,6 +145,9 @@ async def websocket_monitor():
                         if abs(cp - ep) / ep <= 0.005:
                             await bot_engine.send_msg(monitored_trades[s]['chat_id'], f"🔔 تنبيه:\nالسعر وصل منطقة الدخول المقترحة لعملة {s} خذ نظرة و قرر")
                             del monitored_trades[s]
+@app.get("/")
+async def health_check():
+    return {"status": "healthy", "bot": "AhmedSMCBot"}
 
 @app.post("/webhook")
 async def webhook(req: Request):
