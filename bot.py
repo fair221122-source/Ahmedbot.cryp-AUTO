@@ -93,27 +93,46 @@ class InstitutionalEngine:
         atr = tr.rolling(period).mean().iloc[-1]
         return float(atr) if not np.isnan(atr) else 0.0
 
+    # =========================
+    # تحسين اكتشاف الاتجاه + BOS/CHOCH
+    # =========================
     def detect_trend(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
-        c4 = df4h["close"].tail(40)
-        c1 = df1h["close"].tail(40)
+        c4 = df4h["close"].tail(80)
+        c1 = df1h["close"].tail(80)
 
-        def swing_trend(series: pd.Series) -> str:
-            up = series.is_monotonic_increasing
-            down = series.is_monotonic_decreasing
-            if up and not down:
-                return "صاعد"
-            if down and not up:
-                return "هابط"
-            hh = (series.diff() > 0).sum()
-            ll = (series.diff() < 0).sum()
-            if hh > ll + 5:
-                return "صاعد"
-            if ll > hh + 5:
-                return "هابط"
-            return "محايد"
+        def swing_points(series: pd.Series, lookback: int = 3):
+            highs = []
+            lows = []
+            for i in range(lookback, len(series) - lookback):
+                window = series[i - lookback:i + lookback + 1]
+                if series.iloc[i] == window.max():
+                    highs.append((i, series.iloc[i]))
+                if series.iloc[i] == window.min():
+                    lows.append((i, series.iloc[i]))
+            return highs, lows
 
-        t4 = swing_trend(c4)
-        t1 = swing_trend(c1)
+        def detect_structure(series: pd.Series) -> str:
+            highs, lows = swing_points(series)
+            if len(highs) < 3 or len(lows) < 3:
+                return "محايد"
+
+            last_highs = [h[1] for h in highs[-3:]]
+            last_lows = [l[1] for l in lows[-3:]]
+
+            hh = last_highs[2] > last_highs[1] > last_highs[0]
+            hl = last_lows[2] > last_lows[1] > last_lows[0]
+
+            lh = last_highs[2] < last_highs[1] < last_highs[0]
+            ll = last_lows[2] < last_lows[1] < last_lows[0]
+
+            if hh and hl:
+                return "صاعد"   # BOS صاعد
+            if lh and ll:
+                return "هابط"   # BOS هابط
+            return "محايد"      # ممكن CHOCH أو تذبذب
+
+        t4 = detect_structure(c4)
+        t1 = detect_structure(c1)
 
         if t4 == t1 and t4 != "محايد":
             return t4
@@ -157,6 +176,16 @@ class InstitutionalEngine:
         swept_low = last_l < prev_min
         return bool(swept_high or swept_low)
 
+    # =========================
+    # تحسين اكتشاف السيولة (تكدس قمم/قيعان)
+    # =========================
+    def detect_liquidity_zones(self, df: pd.DataFrame) -> bool:
+        h = df["high"].tail(80)
+        l = df["low"].tail(80)
+        high_clusters = ((h.round(3).value_counts() > 3).any())
+        low_clusters = ((l.round(3).value_counts() > 3).any())
+        return bool(high_clusters or low_clusters)
+
     def detect_cluster_pressure(self, df5m: pd.DataFrame, trend: str) -> bool:
         vol = df5m["volume"].tail(30)
         avg = vol.mean()
@@ -164,6 +193,62 @@ class InstitutionalEngine:
         if last > avg * 1.8:
             return True
         return False
+
+    # =========================
+    # Breaker Blocks
+    # =========================
+    def detect_breaker_block(self, df: pd.DataFrame, trend: str) -> bool:
+        if len(df) < 30 or trend == "محايد":
+            return False
+
+        body = (df["close"] - df["open"]).abs()
+        rng = df["high"] - df["low"]
+        strong = (rng > 0) & (body / rng > 0.6) & (rng > rng.rolling(20).mean())
+
+        recent = df[strong].tail(10)
+        if recent.empty:
+            return False
+
+        last = df.iloc[-1]
+
+        if trend == "صاعد":
+            bears = recent[recent["close"] < recent["open"]]
+            if bears.empty:
+                return False
+            bb = bears.iloc[-1]
+            if last["low"] <= bb["high"] <= last["high"]:
+                return True
+
+        if trend == "هابط":
+            bulls = recent[recent["close"] > recent["open"]]
+            if bulls.empty:
+                return False
+            bb = bulls.iloc[-1]
+            if last["low"] <= bb["low"] <= last["high"]:
+                return True
+
+        return False
+
+    # =========================
+    # Mitigation Blocks
+    # =========================
+    def detect_mitigation_block(self, df: pd.DataFrame, trend: str) -> bool:
+        if len(df) < 40 or trend == "محايد":
+            return False
+
+        body = (df["close"] - df["open"]).abs()
+        rng = df["high"] - df["low"]
+        strong = (rng > 0) & (body / rng > 0.5) & (rng > rng.rolling(25).mean())
+
+        zone = df[strong].tail(15)
+        if zone.empty:
+            return False
+
+        last = df.iloc[-1]
+        z_high = zone["high"].max()
+        z_low = zone["low"].min()
+
+        return z_low <= last["close"] <= z_high
 
     def rsi(self, series: pd.Series, period: int = 14) -> float:
         delta = series.diff()
@@ -181,6 +266,9 @@ class InstitutionalEngine:
         ob: bool,
         sweep: bool,
         cluster: bool,
+        breaker: bool,
+        mit_block: bool,
+        liq_zone: bool,
         df15m: pd.DataFrame
     ) -> int:
         score = 50
@@ -194,6 +282,12 @@ class InstitutionalEngine:
             score += 10
         if cluster:
             score += 8
+        if breaker:
+            score += 6
+        if mit_block:
+            score += 6
+        if liq_zone:
+            score += 6
 
         rsi_val = self.rsi(df15m["close"].tail(60))
         if trend == "صاعد" and 35 < rsi_val < 65:
@@ -248,6 +342,32 @@ class InstitutionalEngine:
         rr = max(2.7, min(6.5, rr))
         return round(rr, 1)
 
+    # =========================
+    # تحسين نقاط الدخول
+    # =========================
+    def refine_entry(
+        self,
+        price: float,
+        df1h: pd.DataFrame,
+        trend: str,
+        ob: bool,
+        fvg: bool,
+        mit_block: bool
+    ) -> float:
+        entry = price
+
+        if fvg:
+            h = df1h["high"].iloc[-3:]
+            l = df1h["low"].iloc[-3:]
+            mid = (h.max() + l.min()) / 2
+            entry = (entry + mid) / 2
+
+        if mit_block or ob:
+            eq = df1h["close"].tail(5).mean()
+            entry = (entry + eq) / 2
+
+        return float(entry)
+
     def build_levels(
         self,
         price: float,
@@ -293,17 +413,20 @@ class InstitutionalEngine:
         ob: bool,
         sweep: bool,
         cluster: bool,
+        breaker: bool,
+        mit_block: bool,
+        liq_zone: bool,
         prob: int,
         entry_type: str
     ) -> str:
         parts = []
 
         if trend == "صاعد":
-            parts.append("اتجاه صاعد على الفريمات الكبيرة مع قمم وقيعان أعلى")
+            parts.append("اتجاه صاعد على الفريمات الكبيرة مع قمم وقيعان أعلى (BOS صاعد)")
         elif trend == "هابط":
-            parts.append("اتجاه هابط على الفريمات الكبيرة مع قمم وقيعان أدنى")
+            parts.append("اتجاه هابط على الفريمات الكبيرة مع قمم وقيعان أدنى (BOS هابط)")
         else:
-            parts.append("حركة سعرية متزنة بدون اتجاه واضح على الفريمات الكبيرة")
+            parts.append("حركة سعرية متزنة مع احتمالية CHOCH أو تذبذب في الهيكل السعري")
 
         if fvg:
             parts.append("وجود مناطق FVG تدعم استمرار الحركة")
@@ -313,6 +436,12 @@ class InstitutionalEngine:
             parts.append("حدوث Liquidity Sweep على قمم أو قيعان سابقة")
         if cluster:
             parts.append("ضغط كلاستر واضح في أحجام التداول على الفريمات الصغيرة")
+        if breaker:
+            parts.append("وجود Breaker Block يدعم إعادة الانعكاس من منطقة مؤسسية سابقة")
+        if mit_block:
+            parts.append("وجود Mitigation Block يعكس امتصاص سيولة سابقة وإعادة اختبار منطقة مؤسسية")
+        if liq_zone:
+            parts.append("تكدس واضح للسيولة حول قمم/قيعان متقاربة (Liquidity Zones)")
 
         if prob >= 80:
             parts.append("احتمالية عالية لاستمرار السيناريو الحالي")
@@ -336,20 +465,47 @@ class InstitutionalEngine:
             ob = self.detect_orderblock(df1h, trend)
             sweep = self.detect_liquidity_sweeps(df1h)
             cluster = self.detect_cluster_pressure(df5m, trend)
-            prob = self.score_signal(trend, fvg, ob, sweep, cluster, df15m)
+            breaker = self.detect_breaker_block(df1h, trend)
+            mit_block = self.detect_mitigation_block(df1h, trend)
+            liq_zone = self.detect_liquidity_zones(df1h)
+
+            prob = self.score_signal(
+                trend,
+                fvg,
+                ob,
+                sweep,
+                cluster,
+                breaker,
+                mit_block,
+                liq_zone,
+                df15m
+            )
 
             price = float(df5m["close"].iloc[-1])
             atr = self.calc_atr(df1h)
 
-            # نحدد نوع الصفقة (فوري/معلق) بناءً على قرب السعر من آخر إغلاق 1h
             ref_price = float(df1h["close"].iloc[-1])
             entry_type = self.classify_type(price, ref_price)
 
-            levels = self.build_levels(price, atr, trend, prob, fvg, ob, sweep, cluster, entry_type)
+            refined_entry = self.refine_entry(price, df1h, trend, ob, fvg, mit_block)
+
+            levels = self.build_levels(refined_entry, atr, trend, prob, fvg, ob, sweep, cluster, entry_type)
             if not levels:
                 return None
 
-            behavior = self.build_behavior(symbol, trend, fvg, ob, sweep, cluster, prob, entry_type)
+            behavior = self.build_behavior(
+                symbol,
+                trend,
+                fvg,
+                ob,
+                sweep,
+                cluster,
+                breaker,
+                mit_block,
+                liq_zone,
+                prob,
+                entry_type
+            )
 
             return {
                 "symbol": symbol,
@@ -363,21 +519,13 @@ class InstitutionalEngine:
                 "ob": ob,
                 "sweep": sweep,
                 "cluster": cluster,
+                "breaker": breaker,
+                "mit_block": mit_block,
+                "liq_zone": liq_zone,
                 "behavior": behavior
             }
         except:
             return None
-
-    async def get_top_active_symbols(self, limit: int = 3) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for s in SYMBOLS:
-            res = await self.analyze_symbol(s)
-            if res:
-                results.append(res)
-        if not results:
-            return []
-        results.sort(key=lambda x: x["prob"], reverse=True)
-        return results[:limit]
 
     async def send_msg(self, chat_id: int, text: str):
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -475,7 +623,9 @@ class InstitutionalEngine:
             "-" * 29
         ]
         for i, r in enumerate(focus, start=1):
-            res = r
+    res = r
+            if not res:
+                continue
             trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
             lines.append(
                 f"{i}) #{res['symbol']}\n"
