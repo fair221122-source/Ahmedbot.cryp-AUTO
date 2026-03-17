@@ -611,30 +611,31 @@ class InstitutionalEngine:
         }
         await self.send_msg(chat_id, msg)
 
-    async def send_analysis(self, chat_id: int):
-        news = await self.fetch_news()
-        focus = await self.get_top_active_symbols(limit=3)
-        lines = [
-            "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic",
-            "-" * 43,
-            f"الأخبار: {news}",
-            "",
-            "أكثر ثلاث عملات رقمية نشطة حاليا صعود أو هبوط:",
-            "-" * 29
-        ]
-        for i, r in enumerate(focus, start=1):
-            res = r
-            if not res:
-                continue
-            trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
-            lines.append(
-                f"{i}) #{res['symbol']}\n"
-                f"⏰ 4h: اتجاه {res['trend']} بشكل واضح.\n"
-                "🕰 1h: سيولة مؤسسية وحركة متزنة.\n"
-                "🕒 15m: زخم يدعم الاتجاه الحالي.\n"
-                f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه {trend_word}\n"
-                f"{'-'*43}"
-            )
+async def send_analysis(self, chat_id: int):
+    news = await self.fetch_news()
+    focus = await self.get_top_active_symbols(limit=3)
+    lines = [
+        "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic",
+        "-" * 43,
+        f"الأخبار: {news}",
+        "",
+        "أكثر ثلاث عملات رقمية نشطة حاليا صعود أو هبوط:",
+        "-" * 29
+    ]
+
+    for i, r in enumerate(focus, start=1):
+        res = r
+        if not res:
+            continue
+        trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
+        lines.append(
+            f"{i}) #{res['symbol']}\n"
+            f"⏰ 4h: اتجاه {res['trend']} بشكل واضح.\n"
+            "🕰 1h: سيولة مؤسسية وحركة متزنة.\n"
+            "🕒 15m: زخم يدعم الاتجاه الحالي.\n"
+            f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه {trend_word}\n"
+            f"{'-'*43}"
+        )
         await self.send_msg(chat_id, "\n".join(lines))
 
 
