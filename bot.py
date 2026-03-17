@@ -187,19 +187,21 @@ async def price_tracker():
         while True:
             data = json.loads(await ws.recv())
             
-            # استخراج البيانات بمرونة (تتوافق مع نظام الـ Raw والـ Stream)
-            price_info = data.get('data', data)
+            # إذا كانت البيانات خام (Raw) كما هو الحال في الفيوتشر، نستخدم data مباشرة
+            # وإذا كانت مغلفة (Stream) نستخدم data['data']
+            price_info = data.get('data', data) 
+            
+            # استخراج اسم العملة والسعر بأمان
             symbol = data.get('stream', '').split('@')[0].upper() if 'stream' in data else data.get('s', '').upper()
             
-            # التحقق من وجود السعر لتجنب الرسائل الفارغة
-            if 'p' not in price_info:
-                continue
-                
-            price = float(price_info['p'])
+            if 'p' in price_info:
+                price = float(price_info['p'])
+
 
             
             # تحديث CVD
-            symbol_cvd[symbol] += float(data['data']['q']) if not data['data']['m'] else -float(data['data']['q'])
+symbol_cvd[symbol] += float(price_info['q']) if not price_info['m'] else -float(price_info['q'])
+
             
             if symbol in open_trades:
                 t = open_trades[symbol]
