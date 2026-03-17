@@ -26,6 +26,9 @@ SYMBOLS = [
 
 AUTO_TRADE_COOLDOWN = 1800 
 app = FastAPI()
+@app.get("/")
+async def health_check():
+    return {"status": "running", "bot": "AhmedBots"}
 
 # حالة البوت
 last_auto_trade: Dict[str, float] = {}
