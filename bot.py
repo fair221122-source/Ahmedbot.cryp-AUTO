@@ -33,7 +33,6 @@ MIN_PROB_AUTO = 75
 
 app = FastAPI()
 
-# حالة البوت
 last_sent: Dict[str, float] = {}
 monitored_trades: Dict[str, Dict[str, Any]] = {}
 open_trades: Dict[str, Dict[str, Any]] = {}
@@ -94,20 +93,33 @@ class InstitutionalEngine:
         atr = tr.rolling(period).mean().iloc[-1]
         return float(atr) if not np.isnan(atr) else 0.0
 
-    def detect_trend_smc(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
-        h4 = df4h["high"].tail(60)
-        l4 = df4h["low"].tail(60)
-        c1 = df1h["close"].iloc[-1]
-        if c1 > h4.max():
-            return "صاعد"
-        if c1 < l4.min():
-            return "هابط"
-        swings = df1h["close"].tail(40)
-        if swings.is_monotonic_increasing:
-            return "صاعد"
-        if swings.is_monotonic_decreasing:
-            return "هابط"
-        return "محايد"
+    def detect_trend(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
+        c4 = df4h["close"].tail(40)
+        c1 = df1h["close"].tail(40)
+
+        def swing_trend(series: pd.Series) -> str:
+            up = series.is_monotonic_increasing
+            down = series.is_monotonic_decreasing
+            if up and not down:
+                return "صاعد"
+            if down and not up:
+                return "هابط"
+            hh = (series.diff() > 0).sum()
+            ll = (series.diff() < 0).sum()
+            if hh > ll + 5:
+                return "صاعد"
+            if ll > hh + 5:
+                return "هابط"
+            return "محايد"
+
+        t4 = swing_trend(c4)
+        t1 = swing_trend(c1)
+
+        if t4 == t1 and t4 != "محايد":
+            return t4
+        if t1 != "محايد":
+            return t1
+        return t4
 
     def detect_fvg(self, df: pd.DataFrame) -> bool:
         if len(df) < 5:
@@ -124,18 +136,19 @@ class InstitutionalEngine:
     def detect_orderblock(self, df: pd.DataFrame, trend: str) -> bool:
         body = (df["close"] - df["open"]).abs()
         rng = df["high"] - df["low"]
-        small_body = body / rng < 0.3
-        if small_body.tail(10).sum() == 0:
+        small_body = (rng > 0) & (body / rng < 0.3)
+        recent = df[small_body].tail(10)
+        if recent.empty:
             return False
         if trend == "صاعد":
-            return (df["low"].tail(10) == df["low"].tail(10).min()).any()
+            return (recent["low"] == recent["low"].min()).any()
         if trend == "هابط":
-            return (df["high"].tail(10) == df["high"].tail(10).max()).any()
+            return (recent["high"] == recent["high"].max()).any()
         return False
 
     def detect_liquidity_sweeps(self, df: pd.DataFrame) -> bool:
-        h = df["high"].tail(30)
-        l = df["low"].tail(30)
+        h = df["high"].tail(40)
+        l = df["low"].tail(40)
         last_h = h.iloc[-1]
         last_l = l.iloc[-1]
         prev_max = h.iloc[:-1].max()
@@ -145,12 +158,21 @@ class InstitutionalEngine:
         return bool(swept_high or swept_low)
 
     def detect_cluster_pressure(self, df5m: pd.DataFrame, trend: str) -> bool:
-        vol = df5m["volume"].tail(20)
+        vol = df5m["volume"].tail(30)
         avg = vol.mean()
         last = vol.iloc[-1]
         if last > avg * 1.8:
             return True
         return False
+
+    def rsi(self, series: pd.Series, period: int = 14) -> float:
+        delta = series.diff()
+        gain = delta.clip(lower=0).rolling(period).mean()
+        loss = (-delta.clip(upper=0)).rolling(period).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        val = rsi.iloc[-1]
+        return float(val) if not np.isnan(val) else 50.0
 
     def score_signal(
         self,
@@ -163,57 +185,144 @@ class InstitutionalEngine:
     ) -> int:
         score = 50
         if trend != "محايد":
-            score += 15
+            score += 10
         if fvg:
-            score += 10
+            score += 8
         if ob:
-            score += 10
+            score += 8
         if sweep:
             score += 10
         if cluster:
-            score += 10
-        rsi = self.rsi(df15m["close"].tail(50))
-        if trend == "صاعد" and rsi < 40:
-            score += 5
-        if trend == "هابط" and rsi > 60:
-            score += 5
+            score += 8
+
+        rsi_val = self.rsi(df15m["close"].tail(60))
+        if trend == "صاعد" and 35 < rsi_val < 65:
+            score += 6
+        if trend == "هابط" and 35 < rsi_val < 65:
+            score += 6
+        if trend == "صاعد" and rsi_val > 70:
+            score += 4
+        if trend == "هابط" and rsi_val < 30:
+            score += 4
+
         return max(0, min(96, score))
 
-    def rsi(self, series: pd.Series, period: int = 14) -> float:
-        delta = series.diff()
-        gain = delta.clip(lower=0).rolling(period).mean()
-        loss = (-delta.clip(upper=0)).rolling(period).mean()
-        rs = gain / loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        val = rsi.iloc[-1]
-        return float(val) if not np.isnan(val) else 50.0
+    def build_rr(
+        self,
+        trend: str,
+        fvg: bool,
+        ob: bool,
+        sweep: bool,
+        cluster: bool,
+        atr: float,
+        prob: int,
+        entry_type: str
+    ) -> float:
+        rr = 2.7
+
+        if trend != "محايد":
+            rr += 0.6
+        if fvg:
+            rr += 0.4
+        if ob:
+            rr += 0.4
+        if sweep:
+            rr += 0.6
+        if cluster:
+            rr += 0.5
+
+        if prob >= 80:
+            rr += 0.7
+        elif prob >= 70:
+            rr += 0.4
+
+        if atr > 0:
+            if atr < 0.5:
+                rr -= 0.2
+            elif atr > 2:
+                rr += 0.3
+
+        if entry_type == "معلّق":
+            rr += 0.4
+
+        rr = max(2.7, min(6.5, rr))
+        return round(rr, 1)
 
     def build_levels(
         self,
         price: float,
         atr: float,
         trend: str,
-        prob: int
+        prob: int,
+        fvg: bool,
+        ob: bool,
+        sweep: bool,
+        cluster: bool,
+        entry_type: str
     ) -> Dict[str, Any]:
         if atr <= 0:
             return {}
         atr_mult = round(np.random.uniform(1.7, 1.8), 2)
-        rr = 2.7 + (prob - 50) * (6.5 - 2.7) / 45
-        rr = max(2.7, min(6.5, rr))
         side = "Long" if trend == "صاعد" else "Short"
+        rr = self.build_rr(trend, fvg, ob, sweep, cluster, atr, prob, entry_type)
+
         if side == "Long":
             sl = price - atr * atr_mult
             tp = price + abs(price - sl) * rr
         else:
             sl = price + atr * atr_mult
             tp = price - abs(price - sl) * rr
+
         return {
             "side": side,
             "entry": price,
             "sl": sl,
             "tp": tp,
-            "rr": round(rr, 1)
+            "rr": rr
         }
+
+    def classify_type(self, price: float, entry: float) -> str:
+        dev = abs(price - entry) / entry
+        return "فوري" if dev <= 0.005 else "معلّق"
+
+    def build_behavior(
+        self,
+        symbol: str,
+        trend: str,
+        fvg: bool,
+        ob: bool,
+        sweep: bool,
+        cluster: bool,
+        prob: int,
+        entry_type: str
+    ) -> str:
+        parts = []
+
+        if trend == "صاعد":
+            parts.append("اتجاه صاعد على الفريمات الكبيرة مع قمم وقيعان أعلى")
+        elif trend == "هابط":
+            parts.append("اتجاه هابط على الفريمات الكبيرة مع قمم وقيعان أدنى")
+        else:
+            parts.append("حركة سعرية متزنة بدون اتجاه واضح على الفريمات الكبيرة")
+
+        if fvg:
+            parts.append("وجود مناطق FVG تدعم استمرار الحركة")
+        if ob:
+            parts.append("وجود Order Block قوي قريب من منطقة الدخول")
+        if sweep:
+            parts.append("حدوث Liquidity Sweep على قمم أو قيعان سابقة")
+        if cluster:
+            parts.append("ضغط كلاستر واضح في أحجام التداول على الفريمات الصغيرة")
+
+        if prob >= 80:
+            parts.append("احتمالية عالية لاستمرار السيناريو الحالي")
+        elif prob >= 70:
+            parts.append("توافق جيد بين الفريمات والزخم")
+
+        base = "، ".join(parts)
+        if entry_type == "معلّق":
+            return f"السعر يقترب من منطقة دخول مثالية في {base}."
+        return f"تم اختيار هذه الصفقة بناءً على {base}."
 
     async def analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         try:
@@ -222,7 +331,7 @@ class InstitutionalEngine:
             df15m = await self.fetch_klines(symbol, "15m", 200)
             df5m = await self.fetch_klines(symbol, "5m", 200)
 
-            trend = self.detect_trend_smc(df4h, df1h)
+            trend = self.detect_trend(df4h, df1h)
             fvg = self.detect_fvg(df1h)
             ob = self.detect_orderblock(df1h, trend)
             sweep = self.detect_liquidity_sweeps(df1h)
@@ -232,9 +341,15 @@ class InstitutionalEngine:
             price = float(df5m["close"].iloc[-1])
             atr = self.calc_atr(df1h)
 
-            levels = self.build_levels(price, atr, trend, prob)
+            # نحدد نوع الصفقة (فوري/معلق) بناءً على قرب السعر من آخر إغلاق 1h
+            ref_price = float(df1h["close"].iloc[-1])
+            entry_type = self.classify_type(price, ref_price)
+
+            levels = self.build_levels(price, atr, trend, prob, fvg, ob, sweep, cluster, entry_type)
             if not levels:
                 return None
+
+            behavior = self.build_behavior(symbol, trend, fvg, ob, sweep, cluster, prob, entry_type)
 
             return {
                 "symbol": symbol,
@@ -242,7 +357,13 @@ class InstitutionalEngine:
                 "prob": prob,
                 "price": price,
                 "atr": atr,
-                "levels": levels
+                "levels": levels,
+                "entry_type": entry_type,
+                "fvg": fvg,
+                "ob": ob,
+                "sweep": sweep,
+                "cluster": cluster,
+                "behavior": behavior
             }
         except:
             return None
@@ -257,10 +378,6 @@ class InstitutionalEngine:
         async with (await self.get_session()).post(url, json=payload, timeout=15):
             return
 
-    def classify_type(self, price: float, entry: float) -> str:
-        dev = abs(price - entry) / entry
-        return "فوري" if dev <= 0.005 else "معلّق"
-
     async def send_manual_trades(self, chat_id: int):
         results: List[Dict[str, Any]] = []
         for s in SYMBOLS:
@@ -272,15 +389,15 @@ class InstitutionalEngine:
             return
         results.sort(key=lambda x: x["prob"], reverse=True)
         top = results[:2]
+
         lines = ["أفضل صفقتين في السوق حالياً:", "-" * 35]
         for i, r in enumerate(top):
             lv = r["levels"]
             side_tag = "#Long" if lv["side"] == "Long" else "#Short"
             color = "🟢" if lv["side"] == "Long" else "🔴"
-            ttype = self.classify_type(r["price"], lv["entry"])
             medal = "🥇" if i == 0 else "🥈"
             lines.append(
-                f"{medal} {r['symbol']} {color} ({ttype})\n"
+                f"{medal} {r['symbol']} {color} ({r['entry_type']})\n"
                 f"{side_tag}\n"
                 f"Entry: {lv['entry']:.4f}\n"
                 f"SL: {lv['sl']:.4f}\n"
@@ -289,32 +406,27 @@ class InstitutionalEngine:
                 f"نسبة النجاح المتوقعة: {r['prob']}%\n"
                 f"{'-'*35}"
             )
-            if ttype == "معلّق":
-                lines.append(
-                    "📌 سلوك السعر : السعر يقترب من منطقة دخول مثالية في اتجاه "
-                    f"{r['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
-                    "زخم إيجابي على الفريمات الصغيرة.\n"
-                    "🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
-                )
+            lines.append(f"📌 سلوك السعر : {r['behavior']}")
+            if r["entry_type"] == "معلّق":
+                lines.append("🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة .")
                 monitored_trades[r["symbol"]] = {
                     "entry": lv["entry"],
                     "chat_id": chat_id
                 }
-            else:
-                lines.append(
-                    "📌 سلوك السعر : اتجاه "
-                    f"{r['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
-                    "زخم إيجابي على الفريمات الصغيرة."
-                )
+            open_trades[r["symbol"]] = {
+                "tp": lv["tp"],
+                "side": lv["side"],
+                "chat_id": chat_id
+            }
             lines.append("-" * 35)
+
         await self.send_msg(chat_id, "\n".join(lines))
 
     async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
         lv = res["levels"]
         side_tag = "#Long" if lv["side"] == "Long" else "#Short"
         color = "🟢" if lv["side"] == "Long" else "🔴"
-        ttype = self.classify_type(res["price"], lv["entry"])
-        header = f"⏰ فحص آلي - صفقة جديدة ({ttype})"
+        header = f"⏰ فحص آلي - صفقة جديدة ({res['entry_type']})"
         msg = (
             f"{header}\n"
             f"{res['symbol']} {color}\n"
@@ -325,24 +437,14 @@ class InstitutionalEngine:
             f"R:R = 1:{lv['rr']}\n"
             f"نسبة النجاح المتوقعة: {res['prob']}%\n"
             f"{'-'*35}\n"
+            f"📌 سلوك السعر : {res['behavior']}"
         )
-        if ttype == "معلّق":
-            msg += (
-                "📌 سلوك السعر : السعر يقترب من منطقة دخول مثالية في اتجاه "
-                f"{res['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
-                "زخم إيجابي على الفريمات الصغيرة.\n"
-                "🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
-            )
+        if res["entry_type"] == "معلّق":
+            msg += "\n🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
             monitored_trades[res["symbol"]] = {
                 "entry": lv["entry"],
                 "chat_id": chat_id
             }
-        else:
-            msg += (
-                "📌 سلوك السعر : اتجاه "
-                f"{res['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
-                "زخم إيجابي على الفريمات الصغيرة."
-            )
         open_trades[res["symbol"]] = {
             "tp": lv["tp"],
             "side": lv["side"],
@@ -365,12 +467,13 @@ class InstitutionalEngine:
             res = await self.analyze_symbol(s)
             if not res:
                 continue
+            trend_word = "الصاعد" if res["trend"] == "صاعد" else "الهابط" if res["trend"] == "هابط" else "الحالي"
             lines.append(
                 f"{i}) #{res['symbol']}\n"
                 f"⏰ 4h: اتجاه {res['trend']} بشكل واضح.\n"
                 "🕰 1h: سيولة مؤسسية وحركة متزنة.\n"
                 "🕒 15m: زخم يدعم الاتجاه الحالي.\n"
-                f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه\n"
+                f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه {trend_word}\n"
                 f"{'-'*43}"
             )
         await self.send_msg(chat_id, "\n".join(lines))
@@ -384,20 +487,18 @@ engine = InstitutionalEngine()
 # =========================
 async def websocket_monitor():
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(FAPI_WS, timeout=30) as ws:
+        async with session.ws_connect(FAPI_WS, heartbeat=30, timeout=30) as ws:
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
                 data = json.loads(msg.data)
-                if isinstance(data, dict):
-                    ticks = [data]
-                else:
-                    ticks = data
+                ticks = data if isinstance(data, list) else [data]
                 for tick in ticks:
                     s = tick.get("s")
                     if not s:
                         continue
                     price = float(tick.get("c", 0))
+
                     if s in monitored_trades:
                         ep = monitored_trades[s]["entry"]
                         if abs(price - ep) / ep <= ENTRY_ALERT_TOLERANCE:
@@ -408,6 +509,7 @@ async def websocket_monitor():
                             )
                             await engine.send_msg(chat_id, text)
                             del monitored_trades[s]
+
                     if s in open_trades:
                         tr = open_trades[s]
                         if tr["side"] == "Long" and price >= tr["tp"]:
@@ -436,6 +538,7 @@ async def auto_loop():
         for s in list(last_sent.keys()):
             if now - last_sent[s] > COOLDOWN_SECONDS:
                 del last_sent[s]
+
         best: Optional[Dict[str, Any]] = None
         for sym in SYMBOLS:
             if sym in last_sent and now - last_sent[sym] < COOLDOWN_SECONDS:
@@ -447,6 +550,7 @@ async def auto_loop():
                 continue
             if not best or res["prob"] > best["prob"]:
                 best = res
+
         if best:
             await engine.send_auto_trade(GLOBAL_CHAT_ID, best)
             last_sent[best["symbol"]] = time.time()
@@ -480,6 +584,7 @@ async def webhook(req: Request):
 async def startup():
     asyncio.create_task(auto_loop())
     asyncio.create_task(websocket_monitor())
+    await asyncio.sleep(0.1)
 
 
 if __name__ == "__main__":
