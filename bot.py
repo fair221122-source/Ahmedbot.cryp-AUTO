@@ -15,8 +15,9 @@ from fastapi.responses import JSONResponse
 # =========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-BINANCE_REST_URL = "https://api.binance.com"
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"
+# تصحيح الروابط لتعمل مع الفيوتشر (العقود الآجلة)
+BINANCE_REST_URL = "https://fapi.binance.com" 
+BINANCE_WS_URL = "wss://fstream.binance.com/ws"
 
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
@@ -53,21 +54,19 @@ def wrap_rtl(text): return f"\u202B{text}"
 # أدوات التحليل المؤسسي (SMC/ICT)
 # =========================
 def get_institutional_checks(klines):
+    if not klines or len(klines) < 10: return {"mss": False, "fvg": False, "pd_zone": "neutral"}
     highs = [float(k[2]) for k in klines]
     lows = [float(k[3]) for k in klines]
     closes = [float(k[4]) for k in klines]
     
-    # 1. Market Structure Shift (MSS)
     mss = False
     if closes[-1] > max(highs[-10:-5]): mss = "bullish"
     elif closes[-1] < min(lows[-10:-5]): mss = "bearish"
     
-    # 2. Fair Value Gap (FVG)
     fvg = False
     if float(klines[-3][3]) > float(klines[-1][2]): fvg = "bullish"
     elif float(klines[-3][2]) < float(klines[-1][3]): fvg = "bearish"
     
-    # 3. Premium/Discount (PD Arrays)
     rng_high, rng_low = max(highs[-50:]), min(lows[-50:])
     mid_point = (rng_high + rng_low) / 2
     pd_zone = "discount" if closes[-1] < mid_point else "premium"
@@ -75,14 +74,12 @@ def get_institutional_checks(klines):
     return {"mss": mss, "fvg": fvg, "pd_zone": pd_zone}
 
 def compute_dynamic_params(prob, momentum):
-    # ATR ديناميكي من 1.7 إلى 1.8
     atr_mult = 1.7 + (min(abs(momentum), 10) / 100) 
-    # R:R ديناميكي من 2.5 إلى 7.0
     rr = 2.5 + ((prob - 50) / 40 * 4.5)
     return round(atr_mult, 2), round(rr, 2)
 
 def calc_levels(price, atr, trend, rr):
-    atr_mult = 1.75 # أساسي سيتم تعديله ديناميكياً في الوظيفة الكبرى
+    atr_mult = 1.75 
     sl_dist = atr * atr_mult
     if trend == "bullish":
         sl = price - sl_dist
@@ -94,8 +91,9 @@ def calc_levels(price, atr, trend, rr):
         return {"entry": price, "sl": sl, "tp": tp, "rr": rr, "side": "sell"}
 
 async def analyze_market(symbol: str):
-    k4h = await call_api(f"{BINANCE_REST_URL}/api/v3/klines", {"symbol": symbol, "interval": "4h", "limit": 100})
-    k1h = await call_api(f"{BINANCE_REST_URL}/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": 100})
+    # تصحيح المسار لطلب بيانات الفيوتشر fapi
+    k4h = await call_api(f"{BINANCE_REST_URL}/fapi/v1/klines", {"symbol": symbol, "interval": "4h", "limit": 100})
+    k1h = await call_api(f"{BINANCE_REST_URL}/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 100})
     
     checks_4h = get_institutional_checks(k4h)
     checks_1h = get_institutional_checks(k1h)
@@ -103,7 +101,6 @@ async def analyze_market(symbol: str):
     prob = 50
     reasons = []
     
-    # القائمة الحقيقية: التوافق
     if checks_4h["mss"] == checks_1h["mss"] and checks_4h["mss"]:
         prob += 20
         reasons.append("توافق هيكل السوق (MSS) 4H+1H")
@@ -131,16 +128,11 @@ async def analyze_market(symbol: str):
         "price": float(k1h[-1][4]), "atr": atr, "reasons": " + ".join(reasons), "momentum": cvd
     }
 
-# =========================
-# منطق الرسائل المعدل (ديناميكي)
-# =========================
 def build_trade_output(res, is_auto=False):
     atr_mult, rr = compute_dynamic_params(res["prob"], res["momentum"])
     lvl = calc_levels(res["price"], res["atr"], res["trend"], rr)
-    
     deviation = abs(res["price"] - lvl["entry"]) / lvl["entry"]
     
-    # تمييز الفوري عن المعلق (1% انحراف)
     if deviation <= 0.005:
         trade_type = "فوري"
         footer = ""
@@ -161,57 +153,54 @@ def build_trade_output(res, is_auto=False):
            f"📌 توضيح: {res['reasons']}{footer}")
     return wrap_rtl(msg), lvl
 
-# =========================
-# المهام والتشغيل
-# =========================
 async def auto_scan_loop():
     while True:
-        await asyncio.sleep(300) # فحص كل 5 دقائق
+        await asyncio.sleep(300) 
         if not AUTO_SCAN_CHAT_ID: continue
         for s in SYMBOLS:
             if time.time() - last_auto_trade.get(s, 0) < AUTO_TRADE_COOLDOWN: continue
-            res = await analyze_market(s)
-            if res["prob"] >= 75 and res["trend"] != "neutral":
-                msg, lvl = build_trade_output(res, is_auto=True)
-                await send_msg(AUTO_SCAN_CHAT_ID, msg)
-                last_auto_trade[s] = time.time()
-                open_trades[s] = {"tp": lvl["tp"], "entry": lvl["entry"], "side": lvl["side"], "chat_id": AUTO_SCAN_CHAT_ID}
-                break
+            try:
+                res = await analyze_market(s)
+                if res["prob"] >= 75 and res["trend"] != "neutral":
+                    msg, lvl = build_trade_output(res, is_auto=True)
+                    await send_msg(AUTO_SCAN_CHAT_ID, msg)
+                    last_auto_trade[s] = time.time()
+                    open_trades[s] = {"tp": lvl["tp"], "entry": lvl["entry"], "side": lvl["side"], "chat_id": AUTO_SCAN_CHAT_ID}
+                    break
+            except: continue
 
 async def price_tracker():
-    # في الفيوتشر، يتم دمج العملات مباشرة بدون كلمة stream?streams
     streams = "/".join(f"{s.lower()}@aggTrade" for s in SYMBOLS)
     
-    # السطر المصحح (حذفنا /stream?streams=)
     async with websockets.connect(f"{BINANCE_WS_URL}/{streams}") as ws:
         while True:
-            data = json.loads(await ws.recv())
-            
-            # إذا كانت البيانات خام (Raw) كما هو الحال في الفيوتشر، نستخدم data مباشرة
-            # وإذا كانت مغلفة (Stream) نستخدم data['data']
-            price_info = data.get('data', data) 
-            
-            # استخراج اسم العملة والسعر بأمان
-            symbol = data.get('stream', '').split('@')[0].upper() if 'stream' in data else data.get('s', '').upper()
-            
-            if 'p' in price_info:
-                price = float(price_info['p'])
-
-
-            
-            # تحديث CVD
-symbol_cvd[symbol] += float(price_info['q']) if not price_info['m'] else -float(price_info['q'])
-
-            
-            if symbol in open_trades:
-                t = open_trades[symbol]
-                if abs(price - t['entry']) / t['entry'] < 0.002 and not pending_notified.get(symbol):
-                    await send_msg(t['chat_id'], wrap_rtl(f"السعر الآن في منطقة الدخول المقترحة لعملة #{symbol}، خذ نظرة و قرر"))
-                    pending_notified[symbol] = True
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
                 
-                if (t['side'] == "buy" and price >= t['tp']) or (t['side'] == "sell" and price <= t['tp']):
-                    await send_msg(t['chat_id'], wrap_rtl(f"🎯 تم الوصول للهدف في عملة #{symbol}"))
-                    del open_trades[symbol]
+                price_info = data.get('data', data) 
+                symbol = data.get('stream', '').split('@')[0].upper() if 'stream' in data else data.get('s', '').upper()
+                
+                if 'p' in price_info:
+                    price = float(price_info['p'])
+                    quantity = float(price_info['q'])
+                    is_buyer_maker = price_info['m']
+                    
+                    # تصحيح المسافات للـ CVD
+                    symbol_cvd[symbol] += -quantity if is_buyer_maker else quantity
+                    
+                    if symbol in open_trades:
+                        t = open_trades[symbol]
+                        if abs(price - t['entry']) / t['entry'] < 0.002 and not pending_notified.get(symbol):
+                            await send_msg(t['chat_id'], wrap_rtl(f"السعر الآن في منطقة الدخول لعملة #{symbol}"))
+                            pending_notified[symbol] = True
+                        
+                        if (t['side'] == "buy" and price >= t['tp']) or (t['side'] == "sell" and price <= t['tp']):
+                            await send_msg(t['chat_id'], wrap_rtl(f"🎯 تم الوصول للهدف في عملة #{symbol}"))
+                            del open_trades[symbol]
+            except:
+                await asyncio.sleep(1)
+                continue
 
 @app.get("/")
 async def root(): return {"status": "online"}
@@ -244,4 +233,3 @@ async def startup():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
-
