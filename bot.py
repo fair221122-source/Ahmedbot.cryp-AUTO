@@ -527,6 +527,15 @@ class InstitutionalEngine:
         except:
             return None
 
+    async def get_top_active_symbols(self, limit: int = 3) -> List[Optional[Dict[str, Any]]]:
+        results: List[Dict[str, Any]] = []
+        for s in SYMBOLS:
+            res = await self.analyze_symbol(s)
+            if res:
+                results.append(res)
+        results.sort(key=lambda x: x["prob"], reverse=True)
+        return results[:limit]
+
     async def send_msg(self, chat_id: int, text: str):
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {
@@ -581,7 +590,7 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, "\n".join(lines))
 
-async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
+    async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
         lv = res["levels"]
         side_tag = "#Long" if lv["side"] == "Long" else "#Short"
         color = "🟢" if lv["side"] == "Long" else "🔴"
@@ -614,7 +623,6 @@ async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
         }
 
         await self.send_msg(chat_id, msg)
-
 
     async def send_analysis(self, chat_id: int):
         news = await self.fetch_news()
@@ -649,6 +657,8 @@ async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
             )
 
         await self.send_msg(chat_id, "\n".join(lines))
+
+
 engine = InstitutionalEngine()
 
 
