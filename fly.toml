@@ -1,21 +1,20 @@
 app = "ahmedbot-cryp-auto"
 primary_region = "iad"
 
-# هذا القسم هو المسؤول عن "قتل" التعليق
 [deploy]
-  strategy = "immediate"  # ينهي العملية القديمة فوراً دون انتظار
+  strategy = "immediate"
 
 [env]
   PORT = "8080"
 
+# هذه الإعدادات يجب أن تكون هنا (خارج services)
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 1
+
 [[services]]
   internal_port = 8080
   protocol = "tcp"
-  
-  # تقليل القيود للسماح للماكينة بالاستجابة
-  auto_stop_machines = false 
-  auto_start_machines = true
-  min_machines_running = 0 # اجعلها 0 مؤقتاً لفك التعليق ثم سنعيدها لـ 1
 
   [[services.ports]]
     port = 80
@@ -30,4 +29,4 @@ primary_region = "iad"
     timeout = "5s"
     method = "get"
     path = "/"
-    grace_period = "2m" # زيادة مدة السماح لدقيقتين كاملتين
+    grace_period = "2m"
