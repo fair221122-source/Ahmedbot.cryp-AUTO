@@ -2,16 +2,12 @@ app = "ahmedbot-cryp-auto"
 primary_region = "ams"
 
 [build]
-  builder = "paketobuildpacks/builder:base"
+  dockerfile = "Dockerfile"
 
 [env]
-  PYTHONUNBUFFERED = "true"
-
-[processes]
-  app = "python bot.py"
+  PORT = "8080"
 
 [[services]]
-  processes = ["app"]
   internal_port = 8080
   protocol = "tcp"
 
@@ -27,8 +23,3 @@ primary_region = "ams"
     type = "requests"
     soft_limit = 20
     hard_limit = 25
-
-  [[services.tcp_checks]]
-    interval = "10s"
-    timeout = "2s"
-    grace_period = "20s"
