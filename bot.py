@@ -638,8 +638,6 @@ async def send_analysis(self, chat_id: int):
             )
 
         await self.send_msg(chat_id, "\n".join(lines))
-
-
 engine = InstitutionalEngine()
 
 
