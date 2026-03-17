@@ -183,7 +183,7 @@ async def auto_scan_loop():
 
 async def price_tracker():
     # في الفيوتشر، يتم دمج العملات مباشرة بدون كلمة stream?streams
-    streams = "/".join([f"{s.lower()}@aggTrade"] for s in SYMBOLS)
+    streams = "/".join(f"{s.lower()}@aggTrade" for s in SYMBOLS)
     
     # السطر المصحح (حذفنا /stream?streams=)
     async with websockets.connect(f"{BINANCE_WS_URL}/{streams}") as ws:
