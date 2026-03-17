@@ -188,10 +188,18 @@ async def price_tracker():
     # السطر المصحح (حذفنا /stream?streams=)
     async with websockets.connect(f"{BINANCE_WS_URL}/{streams}") as ws:
         while True:
-
             data = json.loads(await ws.recv())
-            symbol = data['stream'].split('@')[0].upper()
-            price = float(data['data']['p'])
+            
+            # استخراج البيانات بمرونة (تتوافق مع نظام الـ Raw والـ Stream)
+            price_info = data.get('data', data)
+            symbol = data.get('stream', '').split('@')[0].upper() if 'stream' in data else data.get('s', '').upper()
+            
+            # التحقق من وجود السعر لتجنب الرسائل الفارغة
+            if 'p' not in price_info:
+                continue
+                
+            price = float(price_info['p'])
+
             
             # تحديث CVD
             symbol_cvd[symbol] += float(data['data']['q']) if not data['data']['m'] else -float(data['data']['q'])
