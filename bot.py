@@ -25,11 +25,12 @@ SYMBOLS = [
     "APTUSDT","INJUSDT","SEIUSDT","PEPEUSDT","ORDIUSDT","TAOUSDT","ENAUSDT","FTMUSDT","HBARUSDT","ARUSDT"
 ]
 
-AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق
-COOLDOWN_SECONDS = 1800         # 30 دقيقة
+AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق (فحص فقط، ليس بالضرورة صفقة)
+COOLDOWN_SECONDS = 1800         # 30 دقيقة لكل رمز
+GLOBAL_COOLDOWN = 2700          # 45 دقيقة بين أي صفقة آلية وأخرى
 ENTRY_TOLERANCE = 0.01          # 1%
 ENTRY_ALERT_TOLERANCE = 0.005   # 0.5%
-MIN_PROB_AUTO = 75
+MIN_PROB_AUTO = 78              # رفع الحد لتقليل عدد الصفقات
 
 app = FastAPI()
 
@@ -37,10 +38,11 @@ last_sent: Dict[str, float] = {}
 monitored_trades: Dict[str, Dict[str, Any]] = {}
 open_trades: Dict[str, Dict[str, Any]] = {}
 GLOBAL_CHAT_ID: Optional[int] = None
+last_auto_trade_time: float = 0.0
 
 
 # =========================
-# محرك التداول المؤسسي
+# محرك التداول المؤسسي الهجين
 # =========================
 class InstitutionalEngine:
     def __init__(self):
@@ -94,11 +96,17 @@ class InstitutionalEngine:
         return float(atr) if not np.isnan(atr) else 0.0
 
     # =========================
-    # تحسين اكتشاف الاتجاه + BOS/CHOCH
+    # تحسين اكتشاف الاتجاه + BOS/CHOCH + لمسة كلاسيكية
     # =========================
     def detect_trend(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
         c4 = df4h["close"].tail(80)
         c1 = df1h["close"].tail(80)
+
+        # فلتر بسيط باستخدام متوسط متحرك (مدرسة كلاسيكية)
+        ma4 = c4.rolling(50).mean().iloc[-1]
+        ma1 = c1.rolling(50).mean().iloc[-1]
+        last4 = c4.iloc[-1]
+        last1 = c1.iloc[-1]
 
         def swing_points(series: pd.Series, lookback: int = 3):
             highs = []
@@ -126,13 +134,19 @@ class InstitutionalEngine:
             ll = last_lows[2] < last_lows[1] < last_lows[0]
 
             if hh and hl:
-                return "صاعد"   # BOS صاعد
+                return "صاعد"
             if lh and ll:
-                return "هابط"   # BOS هابط
-            return "محايد"      # ممكن CHOCH أو تذبذب
+                return "هابط"
+            return "محايد"
 
         t4 = detect_structure(c4)
         t1 = detect_structure(c1)
+
+        # دمج الهيكل السعري مع المتوسطات (هجين بين SMC وكلاسيكي)
+        if t4 == "صاعد" and last4 > ma4 and last1 > ma1:
+            return "صاعد"
+        if t4 == "هابط" and last4 < ma4 and last1 < ma1:
+            return "هابط"
 
         if t4 == t1 and t4 != "محايد":
             return t4
@@ -176,9 +190,6 @@ class InstitutionalEngine:
         swept_low = last_l < prev_min
         return bool(swept_high or swept_low)
 
-    # =========================
-    # تحسين اكتشاف السيولة (تكدس قمم/قيعان)
-    # =========================
     def detect_liquidity_zones(self, df: pd.DataFrame) -> bool:
         h = df["high"].tail(80)
         l = df["low"].tail(80)
@@ -194,9 +205,6 @@ class InstitutionalEngine:
             return True
         return False
 
-    # =========================
-    # Breaker Blocks
-    # =========================
     def detect_breaker_block(self, df: pd.DataFrame, trend: str) -> bool:
         if len(df) < 30 or trend == "محايد":
             return False
@@ -229,9 +237,6 @@ class InstitutionalEngine:
 
         return False
 
-    # =========================
-    # Mitigation Blocks
-    # =========================
     def detect_mitigation_block(self, df: pd.DataFrame, trend: str) -> bool:
         if len(df) < 40 or trend == "محايد":
             return False
@@ -271,7 +276,8 @@ class InstitutionalEngine:
         liq_zone: bool,
         df15m: pd.DataFrame
     ) -> int:
-        score = 50
+        # درجة داخلية (0 - 100 تقريباً)
+        score = 40
         if trend != "محايد":
             score += 10
         if fvg:
@@ -290,16 +296,21 @@ class InstitutionalEngine:
             score += 6
 
         rsi_val = self.rsi(df15m["close"].tail(60))
-        if trend == "صاعد" and 35 < rsi_val < 65:
-            score += 6
-        if trend == "هابط" and 35 < rsi_val < 65:
+        if 35 < rsi_val < 65:
             score += 6
         if trend == "صاعد" and rsi_val > 70:
-            score += 4
+            score += 3
         if trend == "هابط" and rsi_val < 30:
-            score += 4
+            score += 3
 
-        return max(0, min(96, score))
+        score = max(30, min(95, score))
+
+        # تحويل الدرجة إلى نسبة نجاح "واقعية" (مثلاً بين 45% و 72%)
+        # بحيث لا تظهر أرقام خيالية مثل 90% طوال الوقت
+        prob = 45 + (score - 30) * (27 / 65)  # map 30-95 -> 45-72 تقريباً
+        prob = int(round(prob))
+
+        return prob
 
     def build_rr(
         self,
@@ -312,39 +323,36 @@ class InstitutionalEngine:
         prob: int,
         entry_type: str
     ) -> float:
-        rr = 2.7
+        rr = 2.5
 
         if trend != "محايد":
-            rr += 0.6
+            rr += 0.4
         if fvg:
-            rr += 0.4
+            rr += 0.3
         if ob:
-            rr += 0.4
+            rr += 0.3
         if sweep:
-            rr += 0.6
-        if cluster:
-            rr += 0.5
-
-        if prob >= 80:
-            rr += 0.7
-        elif prob >= 70:
             rr += 0.4
+        if cluster:
+            rr += 0.3
+
+        if prob >= 68:
+            rr += 0.4
+        elif prob >= 60:
+            rr += 0.2
 
         if atr > 0:
             if atr < 0.5:
-                rr -= 0.2
+                rr -= 0.1
             elif atr > 2:
-                rr += 0.3
+                rr += 0.2
 
         if entry_type == "معلّق":
-            rr += 0.4
+            rr += 0.3
 
-        rr = max(2.7, min(6.5, rr))
+        rr = max(2.3, min(5.5, rr))
         return round(rr, 1)
 
-    # =========================
-    # تحسين نقاط الدخول
-    # =========================
     def refine_entry(
         self,
         price: float,
@@ -382,7 +390,7 @@ class InstitutionalEngine:
     ) -> Dict[str, Any]:
         if atr <= 0:
             return {}
-        atr_mult = round(np.random.uniform(1.7, 1.8), 2)
+        atr_mult = round(np.random.uniform(1.6, 1.9), 2)
         side = "Long" if trend == "صاعد" else "Short"
         rr = self.build_rr(trend, fvg, ob, sweep, cluster, atr, prob, entry_type)
 
@@ -443,14 +451,14 @@ class InstitutionalEngine:
         if liq_zone:
             parts.append("تكدس واضح للسيولة حول قمم/قيعان متقاربة (Liquidity Zones)")
 
-        if prob >= 80:
-            parts.append("احتمالية عالية لاستمرار السيناريو الحالي")
-        elif prob >= 70:
-            parts.append("توافق جيد بين الفريمات والزخم")
+        if prob >= 68:
+            parts.append("احتمالية جيدة لاستمرار السيناريو الحالي")
+        elif prob >= 60:
+            parts.append("توافق مقبول بين الفريمات والزخم")
 
         base = "، ".join(parts)
         if entry_type == "معلّق":
-            return f"السعر يقترب من منطقة دخول مثالية في {base}."
+            return f"السعر يقترب من منطقة دخول مؤسسية محتملة في {base}."
         return f"تم اختيار هذه الصفقة بناءً على {base}."
 
     async def analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -461,6 +469,9 @@ class InstitutionalEngine:
             df5m = await self.fetch_klines(symbol, "5m", 200)
 
             trend = self.detect_trend(df4h, df1h)
+            if trend == "محايد":
+                return None
+
             fvg = self.detect_fvg(df1h)
             ob = self.detect_orderblock(df1h, trend)
             sweep = self.detect_liquidity_sweeps(df1h)
@@ -483,6 +494,9 @@ class InstitutionalEngine:
 
             price = float(df5m["close"].iloc[-1])
             atr = self.calc_atr(df1h)
+
+            if atr <= 0:
+                return None
 
             ref_price = float(df1h["close"].iloc[-1])
             entry_type = self.classify_type(price, ref_price)
@@ -533,6 +547,8 @@ class InstitutionalEngine:
             res = await self.analyze_symbol(s)
             if res:
                 results.append(res)
+        if not results:
+            return []
         results.sort(key=lambda x: x["prob"], reverse=True)
         return results[:limit]
 
@@ -626,21 +642,41 @@ class InstitutionalEngine:
 
     async def send_analysis(self, chat_id: int):
         news = await self.fetch_news()
-        focus = await self.get_top_active_symbols(limit=3)
+
+        # هجين: نضمن BTC/ETH/SOL + أفضل عملات أخرى من السوق
+        fixed_focus = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        dynamic_focus = await self.get_top_active_symbols(limit=3)
+
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+
+        # أولاً العملات الثابتة
+        for s in fixed_focus:
+            res = await self.analyze_symbol(s)
+            if res:
+                merged.append(res)
+                seen.add(res["symbol"])
+
+        # ثم نضيف من الديناميكي إن لم تكن مكررة
+        for r in dynamic_focus:
+            if r and r["symbol"] not in seen:
+                merged.append(r)
+                seen.add(r["symbol"])
+
+        if not merged:
+            await self.send_msg(chat_id, "لا يوجد حالياً تحليلات قوية على العملات المحددة.")
+            return
 
         lines = [
             "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic",
             "-" * 43,
             f"الأخبار: {news}",
             "",
-            "أكثر ثلاث عملات رقمية نشطة حالياً صعوداً أو هبوطاً:",
+            "أكثر العملات الرقمية نشاطاً حالياً صعوداً أو هبوطاً:",
             "-" * 29
         ]
 
-        for i, r in enumerate(focus, start=1):
-            if not r:
-                continue
-
+        for i, r in enumerate(merged, start=1):
             trend_word = (
                 "الصاعد" if r["trend"] == "صاعد"
                 else "الهابط" if r["trend"] == "هابط"
@@ -707,14 +743,20 @@ async def websocket_monitor():
 
 
 # =========================
-# الفحص الآلي كل 5 دقائق
+# الفحص الآلي كل 5 دقائق (لكن ليس بالضرورة صفقة كل 5 دقائق)
 # =========================
 async def auto_loop():
+    global last_auto_trade_time
     while True:
         await asyncio.sleep(AUTO_SCAN_INTERVAL)
         if not GLOBAL_CHAT_ID:
             continue
         now = time.time()
+
+        # كول داون عام بين الصفقات الآلية
+        if now - last_auto_trade_time < GLOBAL_COOLDOWN:
+            continue
+
         for s in list(last_sent.keys()):
             if now - last_sent[s] > COOLDOWN_SECONDS:
                 del last_sent[s]
@@ -734,6 +776,7 @@ async def auto_loop():
         if best:
             await engine.send_auto_trade(GLOBAL_CHAT_ID, best)
             last_sent[best["symbol"]] = time.time()
+            last_auto_trade_time = time.time()
 
 
 # =========================
@@ -741,7 +784,7 @@ async def auto_loop():
 # =========================
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "bot": "InstitutionalSMC"}
+    return {"status": "healthy", "bot": "InstitutionalSMC-HYBRID"}
 
 @app.post("/webhook")
 async def webhook(req: Request):
