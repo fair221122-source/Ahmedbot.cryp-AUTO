@@ -1,180 +1,487 @@
-import os, asyncio, json, time, aiohttp
+import os
+import time
+import json
+import asyncio
+from typing import Dict, Any, List, Optional
+
+import aiohttp
 import pandas as pd
 import numpy as np
-from datetime import datetime
 from fastapi import FastAPI, Request
 import uvicorn
 
-# --- الإعدادات (تأكد من ضبطها في السيرفر) ---
+# =========================
+# الإعدادات العامة
+# =========================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-API_KEY_PANIC = os.getenv("CRYPTOPANIC_API_KEY") # اختياري لجلب الأخبار
+CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY")
+
+FAPI_BASE = "https://fapi.binance.com"
+FAPI_WS = "wss://fstream.binance.com/ws/!ticker@arr"
+
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","DOTUSDT","LINKUSDT",
     "MATICUSDT","NEARUSDT","TRXUSDT","LTCUSDT","UNIUSDT","ARBUSDT","OPUSDT","SUIUSDT","FILUSDT","STXUSDT",
     "APTUSDT","INJUSDT","SEIUSDT","PEPEUSDT","ORDIUSDT","TAOUSDT","ENAUSDT","FTMUSDT","HBARUSDT","ARUSDT"
 ]
 
-last_sent = {} # لمنع التكرار خلال 30 دقيقة
-monitored_trades = {} # لمراقبة منطقة الدخول لحظياً
+AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق
+COOLDOWN_SECONDS = 1800         # 30 دقيقة
+ENTRY_TOLERANCE = 0.01          # 1%
+ENTRY_ALERT_TOLERANCE = 0.005   # 0.5%
+MIN_PROB_AUTO = 75
+
 app = FastAPI()
 
-class SmartMoneyBot:
-    def __init__(self):
-        self.session = None
+# حالة البوت
+last_sent: Dict[str, float] = {}
+monitored_trades: Dict[str, Dict[str, Any]] = {}
+open_trades: Dict[str, Dict[str, Any]] = {}
+GLOBAL_CHAT_ID: Optional[int] = None
 
-    async def get_session(self):
+
+# =========================
+# محرك التداول المؤسسي
+# =========================
+class InstitutionalEngine:
+    def __init__(self):
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
 
-    # 1. رادار الأخبار من CryptoPanic
-    async def fetch_news(self):
+    async def fetch_klines(self, symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
+        url = f"{FAPI_BASE}/fapi/v1/klines"
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        async with (await self.get_session()).get(url, params=params, timeout=15) as r:
+            data = await r.json()
+        df = pd.DataFrame(
+            data,
+            columns=["open_time","open","high","low","close","volume",
+                     "close_time","qav","trades","tbbav","tbqav","ignore"]
+        )
+        for c in ["open","high","low","close","volume"]:
+            df[c] = df[c].astype(float)
+        return df
+
+    async def fetch_news(self) -> str:
+        if not CRYPTOPANIC_API_KEY:
+            return "لا توجد أخبار متاحة حالياً."
         try:
-            url = f"https://cryptopanic.com/api/v1/posts/?auth_token={API_KEY_PANIC}&public=true"
-            async with (await self.get_session()).get(url) as r:
+            url = "https://cryptopanic.com/api/v1/posts/"
+            params = {"auth_token": CRYPTOPANIC_API_KEY, "public": "true"}
+            async with (await self.get_session()).get(url, params=params, timeout=15) as r:
                 data = await r.json()
-                titles = [post['title'] for post in data['results'][:2]]
-                return "\n".join(titles) if titles else "لا توجد أخبار مؤثرة حالياً."
-        except: return "تعذر جلب الأخبار، راقب حركة السيولة يدوياً."
+            titles = [p.get("title", "") for p in data.get("results", [])[:2]]
+            if not titles:
+                return "لا توجد أخبار مؤثرة حالياً."
+            return "\n".join(titles)
+        except:
+            return "تعذر جلب الأخبار حالياً، راقب حركة السيولة يدوياً."
 
-    # 2. محرك التحليل المؤسسي (SMC/ICT)
-    def analyze_institutional(self, d4, d1):
-        # Market Structure Shift & Order Blocks
-        trend = "neutral"
-        if d1['c'].iloc[-1] > d4['h'].iloc[-20:].max(): trend = "صاعد"
-        elif d1['c'].iloc[-1] < d4['l'].iloc[-20:].min(): trend = "هابط"
-        
-        # Fair Value Gap (FVG)
-        fvg = (d1['l'].iloc[-3] > d1['h'].iloc[-1]) or (d1['h'].iloc[-3] < d1['l'].iloc[-1])
-        
-        # Premium/Discount Zone
-        mid = (d4['h'].max() + d4['l'].min()) / 2
-        discount = d1['c'].iloc[-1] < mid if trend == "صاعد" else d1['c'].iloc[-1] > mid
-        
-        prob = 50
-        if trend != "neutral": prob += 20
-        if fvg: prob += 15
-        if discount: prob += 10
-        return trend, prob
+    def calc_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean().iloc[-1]
+        return float(atr) if not np.isnan(atr) else 0.0
 
-    async def fetch_klines(self, symbol, interval):
-        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=100"
-        async with (await self.get_session()).get(url) as r:
-            df = pd.DataFrame(await r.json(), columns=['ts','o','h','l','c','v','cts','qv','nt','tbv','tqv','i'])
-            return df.astype(float)
+    def detect_trend_smc(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
+        h4 = df4h["high"].tail(60)
+        l4 = df4h["low"].tail(60)
+        c1 = df1h["close"].iloc[-1]
+        if c1 > h4.max():
+            return "صاعد"
+        if c1 < l4.min():
+            return "هابط"
+        swings = df1h["close"].tail(40)
+        if swings.is_monotonic_increasing:
+            return "صاعد"
+        if swings.is_monotonic_decreasing:
+            return "هابط"
+        return "محايد"
 
-    async def send_msg(self, chat_id, text):
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        # \u202B للمحاذاة لليمين
-        payload = {"chat_id": chat_id, "text": f"\u202B{text}", "parse_mode": "Markdown"}
-        async with (await self.get_session()).post(url, json=payload) as r: return await r.json()
+    def detect_fvg(self, df: pd.DataFrame) -> bool:
+        if len(df) < 5:
+            return False
+        h = df["high"]
+        l = df["low"]
+        for i in range(len(df) - 3, len(df) - 1):
+            if l.iloc[i - 1] > h.iloc[i + 1]:
+                return True
+            if h.iloc[i - 1] < l.iloc[i + 1]:
+                return True
+        return False
 
-    # 3. معالجة السوق (آلي / يدوي)
-    async def process(self, chat_id, mode="auto"):
-        results = []
-        news = await self.fetch_news() if mode == "analysis" else ""
-        
-        for s in SYMBOLS:
-            try:
-                d4, d1 = await self.fetch_klines(s, "4h"), await self.fetch_klines(s, "1h")
-                trend, prob = self.analyze_institutional(d4, d1)
-                price = d1['c'].iloc[-1]
-                atr = d1['h'].iloc[-14:].mean() - d1['l'].iloc[-14:].mean()
-                res = {'s': s, 'trend': trend, 'prob': prob, 'price': price, 'atr': atr}
-                results.append(res)
+    def detect_orderblock(self, df: pd.DataFrame, trend: str) -> bool:
+        body = (df["close"] - df["open"]).abs()
+        rng = df["high"] - df["low"]
+        small_body = body / rng < 0.3
+        if small_body.tail(10).sum() == 0:
+            return False
+        if trend == "صاعد":
+            return (df["low"].tail(10) == df["low"].tail(10).min()).any()
+        if trend == "هابط":
+            return (df["high"].tail(10) == df["high"].tail(10).max()).any()
+        return False
 
-                if mode == "auto" and prob >= 75 and s not in last_sent:
-                    await self.send_formatted_trade(chat_id, res, is_auto=True)
-                    last_sent[s] = time.time()
-            except: continue
+    def detect_liquidity_sweeps(self, df: pd.DataFrame) -> bool:
+        h = df["high"].tail(30)
+        l = df["low"].tail(30)
+        last_h = h.iloc[-1]
+        last_l = l.iloc[-1]
+        prev_max = h.iloc[:-1].max()
+        prev_min = l.iloc[:-1].min()
+        swept_high = last_h > prev_max
+        swept_low = last_l < prev_min
+        return bool(swept_high or swept_low)
 
-        if mode == "analysis": await self.send_analysis(chat_id, results[:3], news)
-        elif mode == "trades":
-            top = sorted(results, key=lambda x: x['prob'], reverse=True)[:2]
-            for i, t in enumerate(top): await self.send_formatted_trade(chat_id, t, rank=i+1)
+    def detect_cluster_pressure(self, df5m: pd.DataFrame, trend: str) -> bool:
+        vol = df5m["volume"].tail(20)
+        avg = vol.mean()
+        last = vol.iloc[-1]
+        if last > avg * 1.8:
+            return True
+        return False
 
-    async def send_formatted_trade(self, chat_id, res, rank=None, is_auto=False):
-        # ATR ذكي (1.7 - 1.8) و R:R ديناميكي (2.7 - 6.5)
-        atr_m = round(np.random.uniform(1.7, 1.8), 2)
-        rr = round(2.7 + (res['prob'] - 50) * (6.5 - 2.7) / 45, 1)
-        
-        side = "#Long" if res['trend'] == "صاعد" else "#Short"
-        color = "🟢" if "Long" in side else "🔴"
-        sl = res['price'] - (res['atr'] * atr_m) if "Long" in side else res['price'] + (res['atr'] * atr_m)
-        tp = res['price'] + (abs(res['price'] - sl) * rr) if "Long" in side else res['price'] - (abs(res['price'] - sl) * rr)
-        
-        # فحص الانحراف (0.5% - 1%)
-        dev = abs(res['price'] - res['price']*1.008) / res['price'] 
-        type_str = "معلّق" if dev > 0.005 else "فورية"
-        
-        if is_auto:
-            header = f"⏰ فحص آلي - صفقة جديدة ({type_str})"
+    def score_signal(
+        self,
+        trend: str,
+        fvg: bool,
+        ob: bool,
+        sweep: bool,
+        cluster: bool,
+        df15m: pd.DataFrame
+    ) -> int:
+        score = 50
+        if trend != "محايد":
+            score += 15
+        if fvg:
+            score += 10
+        if ob:
+            score += 10
+        if sweep:
+            score += 10
+        if cluster:
+            score += 10
+        rsi = self.rsi(df15m["close"].tail(50))
+        if trend == "صاعد" and rsi < 40:
+            score += 5
+        if trend == "هابط" and rsi > 60:
+            score += 5
+        return max(0, min(96, score))
+
+    def rsi(self, series: pd.Series, period: int = 14) -> float:
+        delta = series.diff()
+        gain = delta.clip(lower=0).rolling(period).mean()
+        loss = (-delta.clip(upper=0)).rolling(period).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        val = rsi.iloc[-1]
+        return float(val) if not np.isnan(val) else 50.0
+
+    def build_levels(
+        self,
+        price: float,
+        atr: float,
+        trend: str,
+        prob: int
+    ) -> Dict[str, Any]:
+        if atr <= 0:
+            return {}
+        atr_mult = round(np.random.uniform(1.7, 1.8), 2)
+        rr = 2.7 + (prob - 50) * (6.5 - 2.7) / 45
+        rr = max(2.7, min(6.5, rr))
+        side = "Long" if trend == "صاعد" else "Short"
+        if side == "Long":
+            sl = price - atr * atr_mult
+            tp = price + abs(price - sl) * rr
         else:
-            header = f"{'🥇' if rank==1 else '🥈'} {res['s']} {color} ({type_str})"
+            sl = price + atr * atr_mult
+            tp = price - abs(price - sl) * rr
+        return {
+            "side": side,
+            "entry": price,
+            "sl": sl,
+            "tp": tp,
+            "rr": round(rr, 1)
+        }
 
-        msg = f"{header}\n{side}\nEntry: {res['price']:.4f}\nSL: {sl:.4f}\nTP: {tp:.4f}\nR:R = 1:{rr}\nنسبة النجاح المتوقعة: {res['prob']}%\n"
-        msg += "-------------------------------------------\n"
-        msg += f"📌 سلوك السعر : {'السعر يقترب من منطقة دخول مثالية في' if type_str=='معلّق' else 'اتجاه ' + res['trend'] + ' على الفريمات الكبيرة مع'} قمم وقيعان أعلى بشكل واضح. زخم إيجابي على الفريمات الصغيرة."
-        
-        if type_str == "معلّق":
-            msg += "\n🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
-            monitored_trades[res['s']] = {'entry': res['price'], 'chat_id': chat_id}
-            
+    async def analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        try:
+            df4h = await self.fetch_klines(symbol, "4h", 200)
+            df1h = await self.fetch_klines(symbol, "1h", 200)
+            df15m = await self.fetch_klines(symbol, "15m", 200)
+            df5m = await self.fetch_klines(symbol, "5m", 200)
+
+            trend = self.detect_trend_smc(df4h, df1h)
+            fvg = self.detect_fvg(df1h)
+            ob = self.detect_orderblock(df1h, trend)
+            sweep = self.detect_liquidity_sweeps(df1h)
+            cluster = self.detect_cluster_pressure(df5m, trend)
+            prob = self.score_signal(trend, fvg, ob, sweep, cluster, df15m)
+
+            price = float(df5m["close"].iloc[-1])
+            atr = self.calc_atr(df1h)
+
+            levels = self.build_levels(price, atr, trend, prob)
+            if not levels:
+                return None
+
+            return {
+                "symbol": symbol,
+                "trend": trend,
+                "prob": prob,
+                "price": price,
+                "atr": atr,
+                "levels": levels
+            }
+        except:
+            return None
+
+    async def send_msg(self, chat_id: int, text: str):
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": f"\u202B{text}",
+            "parse_mode": "Markdown"
+        }
+        async with (await self.get_session()).post(url, json=payload, timeout=15):
+            return
+
+    def classify_type(self, price: float, entry: float) -> str:
+        dev = abs(price - entry) / entry
+        return "فوري" if dev <= 0.005 else "معلّق"
+
+    async def send_manual_trades(self, chat_id: int):
+        results: List[Dict[str, Any]] = []
+        for s in SYMBOLS:
+            res = await self.analyze_symbol(s)
+            if res:
+                results.append(res)
+        if not results:
+            await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
+            return
+        results.sort(key=lambda x: x["prob"], reverse=True)
+        top = results[:2]
+        lines = ["أفضل صفقتين في السوق حالياً:", "-" * 35]
+        for i, r in enumerate(top):
+            lv = r["levels"]
+            side_tag = "#Long" if lv["side"] == "Long" else "#Short"
+            color = "🟢" if lv["side"] == "Long" else "🔴"
+            ttype = self.classify_type(r["price"], lv["entry"])
+            medal = "🥇" if i == 0 else "🥈"
+            lines.append(
+                f"{medal} {r['symbol']} {color} ({ttype})\n"
+                f"{side_tag}\n"
+                f"Entry: {lv['entry']:.4f}\n"
+                f"SL: {lv['sl']:.4f}\n"
+                f"TP: {lv['tp']:.4f}\n"
+                f"R:R = 1:{lv['rr']}\n"
+                f"نسبة النجاح المتوقعة: {r['prob']}%\n"
+                f"{'-'*35}"
+            )
+            if ttype == "معلّق":
+                lines.append(
+                    "📌 سلوك السعر : السعر يقترب من منطقة دخول مثالية في اتجاه "
+                    f"{r['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
+                    "زخم إيجابي على الفريمات الصغيرة.\n"
+                    "🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
+                )
+                monitored_trades[r["symbol"]] = {
+                    "entry": lv["entry"],
+                    "chat_id": chat_id
+                }
+            else:
+                lines.append(
+                    "📌 سلوك السعر : اتجاه "
+                    f"{r['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
+                    "زخم إيجابي على الفريمات الصغيرة."
+                )
+            lines.append("-" * 35)
+        await self.send_msg(chat_id, "\n".join(lines))
+
+    async def send_auto_trade(self, chat_id: int, res: Dict[str, Any]):
+        lv = res["levels"]
+        side_tag = "#Long" if lv["side"] == "Long" else "#Short"
+        color = "🟢" if lv["side"] == "Long" else "🔴"
+        ttype = self.classify_type(res["price"], lv["entry"])
+        header = f"⏰ فحص آلي - صفقة جديدة ({ttype})"
+        msg = (
+            f"{header}\n"
+            f"{res['symbol']} {color}\n"
+            f"{side_tag}\n"
+            f"Entry: {lv['entry']:.4f}\n"
+            f"SL: {lv['sl']:.4f}\n"
+            f"TP: {lv['tp']:.4f}\n"
+            f"R:R = 1:{lv['rr']}\n"
+            f"نسبة النجاح المتوقعة: {res['prob']}%\n"
+            f"{'-'*35}\n"
+        )
+        if ttype == "معلّق":
+            msg += (
+                "📌 سلوك السعر : السعر يقترب من منطقة دخول مثالية في اتجاه "
+                f"{res['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
+                "زخم إيجابي على الفريمات الصغيرة.\n"
+                "🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة ."
+            )
+            monitored_trades[res["symbol"]] = {
+                "entry": lv["entry"],
+                "chat_id": chat_id
+            }
+        else:
+            msg += (
+                "📌 سلوك السعر : اتجاه "
+                f"{res['trend']} على الفريمات الكبيرة مع قمم وقيعان أعلى بشكل واضح. "
+                "زخم إيجابي على الفريمات الصغيرة."
+            )
+        open_trades[res["symbol"]] = {
+            "tp": lv["tp"],
+            "side": lv["side"],
+            "chat_id": chat_id
+        }
         await self.send_msg(chat_id, msg)
 
-    async def send_analysis(self, chat_id, top, news):
-        msg = f"التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic\n-------------------------------------------\nالأخبار: {news}\n\nأكثر ثلاث عملات رقمية نشطة حاليا صعود أو هبوط:\n-----------------------------\n"
-        for i, t in enumerate(top):
-            msg += f"{i+1}) #{t['s']}\n⏰ 4h: اتجاه {t['trend']} بشكل واضح.\n🕰 1h: سيولة مؤسسية وحركة متزنة.\n🕒 15m: زخم يدعم الاتجاه الحالي.\n📉 التوقع: {t['prob']}% احتمال استمرار الاتجاه\n-------------------------------------------\n"
-        await self.send_msg(chat_id, msg)
+    async def send_analysis(self, chat_id: int):
+        news = await self.fetch_news()
+        focus = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        lines = [
+            "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من موقع CryptoPanic",
+            "-" * 43,
+            f"الأخبار: {news}",
+            "",
+            "أكثر ثلاث عملات رقمية نشطة حاليا صعود أو هبوط:",
+            "-" * 29
+        ]
+        for i, s in enumerate(focus, start=1):
+            res = await self.analyze_symbol(s)
+            if not res:
+                continue
+            lines.append(
+                f"{i}) #{res['symbol']}\n"
+                f"⏰ 4h: اتجاه {res['trend']} بشكل واضح.\n"
+                "🕰 1h: سيولة مؤسسية وحركة متزنة.\n"
+                "🕒 15m: زخم يدعم الاتجاه الحالي.\n"
+                f"📉 التوقع: {res['prob']}% احتمال استمرار الاتجاه\n"
+                f"{'-'*43}"
+            )
+        await self.send_msg(chat_id, "\n".join(lines))
 
-bot_engine = SmartMoneyBot()
-GLOBAL_CHAT_ID = None
 
-# --- نظام الرصد اللحظي (Websocket Session) ---
+engine = InstitutionalEngine()
+
+
+# =========================
+# WebSocket لمراقبة الأسعار
+# =========================
 async def websocket_monitor():
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect("wss://fstream.binance.com/ws/!ticker@arr") as ws:
+        async with session.ws_connect(FAPI_WS, timeout=30) as ws:
             async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
                 data = json.loads(msg.data)
-                for tick in data:
-                    s = tick['s']
+                if isinstance(data, dict):
+                    ticks = [data]
+                else:
+                    ticks = data
+                for tick in ticks:
+                    s = tick.get("s")
+                    if not s:
+                        continue
+                    price = float(tick.get("c", 0))
                     if s in monitored_trades:
-                        cp = float(tick['c'])
-                        ep = monitored_trades[s]['entry']
-                        if abs(cp - ep) / ep <= 0.005:
-                            await bot_engine.send_msg(monitored_trades[s]['chat_id'], f"🔔 تنبيه:\nالسعر وصل منطقة الدخول المقترحة لعملة {s} خذ نظرة و قرر")
+                        ep = monitored_trades[s]["entry"]
+                        if abs(price - ep) / ep <= ENTRY_ALERT_TOLERANCE:
+                            chat_id = monitored_trades[s]["chat_id"]
+                            text = (
+                                "🔔 تنبيه:\n"
+                                f"السعر وصل منطقة الدخول المقترحة لزوج العملة {s} خذ نظرة و قرر"
+                            )
+                            await engine.send_msg(chat_id, text)
                             del monitored_trades[s]
+                    if s in open_trades:
+                        tr = open_trades[s]
+                        if tr["side"] == "Long" and price >= tr["tp"]:
+                            await engine.send_msg(
+                                tr["chat_id"],
+                                f"\u202B🎯 تم الوصول للهدف في عملة #{s}"
+                            )
+                            del open_trades[s]
+                        elif tr["side"] == "Short" and price <= tr["tp"]:
+                            await engine.send_msg(
+                                tr["chat_id"],
+                                f"\u202B🎯 تم الوصول للهدف في عملة #{s}"
+                            )
+                            del open_trades[s]
+
+
+# =========================
+# الفحص الآلي كل 5 دقائق
+# =========================
+async def auto_loop():
+    while True:
+        await asyncio.sleep(AUTO_SCAN_INTERVAL)
+        if not GLOBAL_CHAT_ID:
+            continue
+        now = time.time()
+        for s in list(last_sent.keys()):
+            if now - last_sent[s] > COOLDOWN_SECONDS:
+                del last_sent[s]
+        best: Optional[Dict[str, Any]] = None
+        for sym in SYMBOLS:
+            if sym in last_sent and now - last_sent[sym] < COOLDOWN_SECONDS:
+                continue
+            res = await engine.analyze_symbol(sym)
+            if not res:
+                continue
+            if res["prob"] < MIN_PROB_AUTO:
+                continue
+            if not best or res["prob"] > best["prob"]:
+                best = res
+        if best:
+            await engine.send_auto_trade(GLOBAL_CHAT_ID, best)
+            last_sent[best["symbol"]] = time.time()
+
+
+# =========================
+# FastAPI Webhook + Health
+# =========================
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "bot": "AhmedSMCBot"}
+    return {"status": "healthy", "bot": "InstitutionalSMC"}
 
 @app.post("/webhook")
 async def webhook(req: Request):
     global GLOBAL_CHAT_ID
     data = await req.json()
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        GLOBAL_CHAT_ID = chat_id
-        text = data["message"].get("text", "")
-        if text == "تحليل": asyncio.create_task(bot_engine.process(chat_id, "analysis"))
-        elif text == "صفقات": asyncio.create_task(bot_engine.process(chat_id, "trades"))
+    msg = data.get("message", {})
+    if not msg:
+        return {"ok": True}
+    chat_id = msg["chat"]["id"]
+    GLOBAL_CHAT_ID = chat_id
+    text = msg.get("text", "").strip()
+    if text == "تحليل":
+        asyncio.create_task(engine.send_analysis(chat_id))
+    elif text == "صفقات":
+        asyncio.create_task(engine.send_manual_trades(chat_id))
     return {"ok": True}
 
-async def auto_loop():
-    while True:
-        if GLOBAL_CHAT_ID:
-            await bot_engine.process(GLOBAL_CHAT_ID, "auto")
-        # تنظيف قائمة الـ 30 دقيقة
-        now = time.time()
-        for s in list(last_sent.keys()):
-            if now - last_sent[s] > 1800: del last_sent[s]
-        await asyncio.sleep(300)
 
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(auto_loop())
     asyncio.create_task(websocket_monitor())
 
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
