@@ -14,7 +14,7 @@ import uvicorn
 # الإعدادات العامة
 # =========================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY")
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
 FAPI_BASE = "https://fapi.binance.com"
 FAPI_WS = "wss://fstream.binance.com/ws/!ticker@arr"
@@ -70,8 +70,8 @@ class InstitutionalEngine:
         if not CRYPTOPANIC_API_KEY:
             return "لا توجد أخبار متاحة حالياً."
         try:
-            url = "https://cryptopanic.com/api/v1/posts/"
-            params = {"auth_token": CRYPTOPANIC_API_KEY, "public": "true"}
+            url = "https://cryptopanic.comi/v1/posts/"
+            params = {"auth_token": CMC_API_KEY, "public": "true"}
             async with (await self.get_session()).get(url, params=params, timeout=15) as r:
                 data = await r.json()
             titles = [p.get("title", "") for p in data.get("results", [])[:2]]
