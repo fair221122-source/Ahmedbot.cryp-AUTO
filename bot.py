@@ -640,7 +640,7 @@ class InstitutionalEngine:
         focus = await self.get_top_active_symbols(limit=3)
 
         lines = [
-            "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من CoinMarketCap",
+            "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من CoinDesk",
             "-" * 43,
             f"الأخبار / بيانات السوق:\n{news}",
             "",
