@@ -66,44 +66,28 @@ class InstitutionalEngine:
             df[c] = df[c].astype(float)
         return df
 
-    async def fetch_news(self) -> str:
-        """
-        جلب بيانات من CoinMarketCap API (مثال: أكثر العملات تحركاً خلال 24 ساعة)
-        يمكنك تعديل الـ endpoint أو الحقول حسب كود الـ API الذي لديك.
-        """
-        if not COINMARKET_API_KEY:
-            return "لا توجد بيانات أخبار/سوق متاحة حالياً (مفتاح CoinMarketCap غير مضبوط)."
-        try:
-            url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-            params = {
-                "start": "1",
-                "limit": "5",
-                "convert": "USD",
-                "sort": "percent_change_24h",
-                "sort_dir": "desc"
-            }
-            headers = {
-                "X-CMC_PRO_API_KEY": COINMARKET_API_KEY,
-                "Accept": "application/json"
-            }
-            async with (await self.get_session()).get(url, params=params, headers=headers, timeout=15) as r:
-                data = await r.json()
+    async def fetch_news(self):
+    import feedparser
 
-            items = data.get("data", [])[:2]
-            if not items:
-                return "لا توجد بيانات سوق مؤثرة حالياً من CoinMarketCap."
+    rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 
-            titles = []
-            for c in items:
-                name = c.get("name", "")
-                symbol = c.get("symbol", "")
-                change = c.get("quote", {}).get("USD", {}).get("percent_change_24h", 0)
-                titles.append(f"{name} ({symbol}) تغيّر 24h: {change:.2f}%")
+    try:
+        feed = feedparser.parse(rss_url)
+        items = feed.entries[:5]
 
-            return "\n".join(titles)
-        except Exception:
-            return "تعذر جلب بيانات CoinMarketCap حالياً، راقب حركة السيولة يدوياً."
+        if not items:
+            return "لا توجد أخبار متاحة حالياً."
 
+        news_list = []
+        for item in items:
+            title = item.title
+            link = item.link
+            news_list.append(f"• {title}\n{link}")
+
+        return "\n\n".join(news_list)
+
+    except Exception:
+        return "تعذر جلب أخبار RSS حالياً."
     def calc_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         high = df["high"]
         low = df["low"]
