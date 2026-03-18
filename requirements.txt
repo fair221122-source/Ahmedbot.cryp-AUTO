@@ -4,3 +4,4 @@ aiohttp
 pandas
 numpy
 python-dotenv
+feedparser
