@@ -68,6 +68,7 @@ class InstitutionalEngine:
 
     async def fetch_news(self):
         import feedparser
+        from deep_translator import GoogleTranslator
 
         rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 
@@ -80,9 +81,10 @@ class InstitutionalEngine:
 
             news_list = []
             for item in items:
-                title = item.title
+                title_en = item.title
+                title_ar = GoogleTranslator(source='auto', target='ar').translate(title_en)
                 link = item.link
-                news_list.append(f"• {title}\n{link}")
+                news_list.append(f"• {title_ar}\n{link}")
 
             return "\n\n".join(news_list)
 
