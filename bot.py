@@ -1,4 +1,3 @@
-هذا 👇هجين من ها 👆
 import os
 import time
 import json
