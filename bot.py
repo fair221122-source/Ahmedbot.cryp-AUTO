@@ -67,28 +67,27 @@ class InstitutionalEngine:
         return df
 
     async def fetch_news(self):
-    import feedparser
+        import feedparser
 
-    rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+        rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 
-    try:
-        feed = feedparser.parse(rss_url)
-        items = feed.entries[:5]
+        try:
+            feed = feedparser.parse(rss_url)
+            items = feed.entries[:5]
 
-        if not items:
-            return "لا توجد أخبار متاحة حالياً."
+            if not items:
+                return "لا توجد أخبار متاحة حالياً."
 
-        news_list = []
-        for item in items:
-            title = item.title
-            link = item.link
-            news_list.append(f"• {title}\n{link}")
+            news_list = []
+            for item in items:
+                title = item.title
+                link = item.link
+                news_list.append(f"• {title}\n{link}")
 
-        return "\n\n".join(news_list)
+            return "\n\n".join(news_list)
 
-    except Exception:
-        return "تعذر جلب أخبار RSS حالياً."
-    
+        except Exception:
+            return "تعذر جلب أخبار RSS حالياً."
     def calc_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         high = df["high"]
         low = df["low"]
