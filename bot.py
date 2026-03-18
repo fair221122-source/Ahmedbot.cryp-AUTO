@@ -88,6 +88,7 @@ class InstitutionalEngine:
 
     except Exception:
         return "تعذر جلب أخبار RSS حالياً."
+    
     def calc_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         high = df["high"]
         low = df["low"]
