@@ -30,7 +30,7 @@ AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق
 COOLDOWN_SECONDS = 1800         # 30 دقيقة
 ENTRY_TOLERANCE = 0.01          # 1% (تستخدم في المنطق الحالي إن احتجتها لاحقاً)
 ENTRY_ALERT_TOLERANCE = 0.005   # 0.5% لتنبيه الوصول لمنطقة الدخول
-MIN_PROB_AUTO = 75
+MIN_PROB_AUTO = 85
 
 app = FastAPI()
 
