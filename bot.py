@@ -64,6 +64,30 @@ class InstitutionalEngine:
         for c in ["open", "high", "low", "close", "volume"]:
             df[c] = df[c].astype(float)
         return df
+        async def fetch_news(self):
+    import feedparser
+    from deep_translator import GoogleTranslator
+
+    rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+
+    try:
+        feed = feedparser.parse(rss_url)
+        items = feed.entries[:5]
+
+        if not items:
+            return "لا توجد أخبار متاحة حالياً."
+
+        news_list = []
+        for item in items:
+            title_en = item.title
+            title_ar = GoogleTranslator(source='auto', target='ar').translate(title_en)
+            link = item.link
+            news_list.append(f"• {title_ar}\n{link}")
+
+        return "\n\n".join(news_list)
+
+    except Exception:
+        return "تعذر جلب أخبار RSS حالياً."
 
     # =========================
     # ATR ذكي
