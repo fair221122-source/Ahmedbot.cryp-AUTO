@@ -789,8 +789,6 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, msg)
 
-class InstitutionalEngine:
-
     async def send_analysis(self, chat_id: int):
         news = await self.fetch_news()
         focus = await self.get_top_active_symbols(limit=3)
