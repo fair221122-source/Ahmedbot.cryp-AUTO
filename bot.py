@@ -789,16 +789,18 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, msg)
 
-    async def send_analysis(self, chat_id: int):
-        focus = await self.get_top_active_symbols(limit=3)
+async def send_analysis(self, chat_id: int):
+    news = await self.fetch_news()   # ← جلب الأخبار من CoinDesk
+    focus = await self.get_top_active_symbols(limit=3)
 
-        lines = [
-            "التحليل اليومي لسوق الكريبتو فيوتشرز وفق نموذج السيولة المؤسسية (SMC / ICT)",
-            "-" * 55,
-            "أكثر ثلاث عملات رقمية نشطة حالياً (اتجاه + سيولة + زخم):",
-            "-" * 35
-        ]
-
+    lines = [
+        "التحليل اليومي لسوق الكريبتو فيوتشرز حسب البيانات الواردة من CoinDesk",
+        "-" * 43,
+        f"الأخبار / بيانات السوق:\n{news}",
+        "-" * 55,
+        "أكثر ثلاث عملات رقمية نشطة حالياً (اتجاه + سيولة + زخم):",
+        "-" * 35
+    ]
         for i, r in enumerate(focus, start=1):
             if not r:
                 continue
