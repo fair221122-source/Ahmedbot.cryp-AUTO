@@ -820,6 +820,39 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, "\n".join(lines))
 
+async def fetch_news(self):
+    import feedparser
+    from deep_translator import GoogleTranslator
+
+    rss_url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+
+    try:
+        # جلب الأخبار من RSS
+        feed = feedparser.parse(rss_url)
+        items = feed.entries[:5]
+
+        if not items:
+            return "لا توجد أخبار متاحة حالياً."
+
+        news_list = []
+
+        # معالجة وترجمة كل خبر
+        for item in items:
+            title_en = item.title
+            link = item.link
+
+            try:
+                title_ar = GoogleTranslator(source='auto', target='ar').translate(title_en)
+            except:
+                title_ar = title_en  # في حال فشل الترجمة
+
+            news_list.append(f"• {title_ar}\n{link}")
+
+        # دمج الأخبار في نص واحد
+        return "\n\n".join(news_list)
+
+    except Exception:
+        return "تعذر جلب أخبار RSS حالياً."
 
 engine = InstitutionalEngine()
 
