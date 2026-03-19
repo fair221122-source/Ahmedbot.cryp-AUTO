@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 
 import aiohttp
 import pandas as pd
@@ -28,7 +29,7 @@ SYMBOLS = [
 AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق
 COOLDOWN_SECONDS = 1800         # 30 دقيقة
 ENTRY_ALERT_TOLERANCE = 0.005   # 0.5% لتنبيه الوصول لمنطقة الدخول
-MIN_PROB_AUTO = 70              # سنجعلها أكثر واقعية
+MIN_PROB_AUTO = 70              # حد أدنى للنسبة في الفحص الآلي
 
 app = FastAPI()
 
@@ -79,6 +80,51 @@ class InstitutionalEngine:
         ], axis=1).max(axis=1)
         atr = tr.rolling(period).mean().iloc[-1]
         return float(atr) if not np.isnan(atr) else 0.0
+
+    # =========================
+    # Kill Zones (لندن + نيويورك)
+    # =========================
+    def in_kill_zone(self) -> bool:
+        """
+        نستخدم التوقيت العالمي UTC:
+        - لندن تقريباً: 7 إلى 11 UTC
+        - نيويورك تقريباً: 12 إلى 20 UTC
+        """
+        now_utc = datetime.now(timezone.utc)
+        h = now_utc.hour
+        # لندن أو نيويورك
+        return (7 <= h <= 11) or (12 <= h <= 20)
+
+    # =========================
+    # فلتر تذبذب (Low Volatility Filter)
+    # =========================
+    def is_low_volatility(self, df1h: pd.DataFrame, atr: float) -> bool:
+        """
+        نعتبر السوق ميت إذا كان متوسط المدى السعري ضعيف جداً
+        مقارنة بالسعر الحالي (رينج ضيق).
+        """
+        if len(df1h) < 40:
+            return False
+        recent = df1h.tail(30)
+        high = recent["high"]
+        low = recent["low"]
+        price = recent["close"].iloc[-1]
+        avg_range = (high - low).mean()
+        if price <= 0:
+            return False
+        rel_range = avg_range / price
+        # لو الرينج أقل من 0.4% نعتبره تذبذب ضعيف
+        return bool(rel_range < 0.004)
+
+    # =========================
+    # هيكل جاهز لفلتر أخبار (يمكنك ربطه لاحقاً)
+    # =========================
+    def is_news_time(self) -> bool:
+        """
+        هنا يمكنك لاحقاً ربط أوقات الأخبار القوية (FOMC, CPI, NFP...)
+        حالياً نعيد False دائماً حتى لا نمنع أي صفقة.
+        """
+        return False
 
     # =========================
     # هيكل السوق (BOS / CHOCH)
@@ -297,9 +343,23 @@ class InstitutionalEngine:
         if cluster:
             score += 8
 
-        # تطبيع النتيجة إلى 0–100
         score = max(0, min(100, score))
         return int(score)
+
+    # =========================
+    # تصنيف جودة الإشارة (A / B / C)
+    # =========================
+    def classify_quality(self, prob: int, confluence_count: int) -> str:
+        """
+        A: نسبة عالية + تداخل إشارات قوي
+        B: نسبة متوسطة + تداخل جيد
+        C: أقل من ذلك
+        """
+        if prob >= 80 and confluence_count >= 6:
+            return "A"
+        if prob >= 65 and confluence_count >= 4:
+            return "B"
+        return "C"
 
     # =========================
     # R:R + ATR + المستويات
@@ -433,7 +493,8 @@ class InstitutionalEngine:
         liq_zone: bool,
         cluster: bool,
         prob: int,
-        entry_type: str
+        entry_type: str,
+        quality: str
     ) -> str:
         parts = []
 
@@ -465,6 +526,8 @@ class InstitutionalEngine:
             parts.append("توافق قوي بين الهيكل والسيولة والزخم")
         elif prob >= 70:
             parts.append("توافق جيد بين الفريمات مع زخم داعم")
+
+        parts.append(f"تصنيف الإشارة: {quality}")
 
         base = "، ".join(parts)
         if entry_type == "معلّق":
@@ -508,6 +571,27 @@ class InstitutionalEngine:
             entry_type = self.classify_type(price, ref_price)
             refined_entry = self.refine_entry(price, df1h, trend, ob, fvg, mit_block)
 
+            low_vol = self.is_low_volatility(df1h, atr)
+            kill_ok = self.in_kill_zone()
+            news_block = self.is_news_time()
+
+            # عدد التوافقات (Confluence Count)
+            confluence_count = sum([
+                trend != "محايد",
+                fvg,
+                ob,
+                breaker,
+                mit_block,
+                liq_pools["equal_highs"],
+                liq_pools["equal_lows"],
+                liq_pools["sweep_high"],
+                liq_pools["sweep_low"],
+                liq_zone,
+                cluster
+            ])
+
+            quality = self.classify_quality(prob, confluence_count)
+
             levels = self.build_levels(
                 refined_entry,
                 atr,
@@ -536,7 +620,8 @@ class InstitutionalEngine:
                 liq_zone,
                 cluster,
                 prob,
-                entry_type
+                entry_type,
+                quality
             )
 
             return {
@@ -554,7 +639,12 @@ class InstitutionalEngine:
                 "liq_pools": liq_pools,
                 "liq_zone": liq_zone,
                 "cluster": cluster,
-                "behavior": behavior
+                "behavior": behavior,
+                "quality": quality,
+                "confluence": confluence_count,
+                "low_vol": low_vol,
+                "kill_ok": kill_ok,
+                "news_block": news_block
             }
         except Exception:
             return None
@@ -596,6 +686,19 @@ class InstitutionalEngine:
             side_tag = "#Long" if lv["side"] == "Long" else "#Short"
             color = "🟢" if lv["side"] == "Long" else "🔴"
             medal = "🥇" if i == 0 else "🥈"
+
+            extra_flags = []
+            if r["low_vol"]:
+                extra_flags.append("⚠️ تذبذب ضعيف")
+            if not r["kill_ok"]:
+                extra_flags.append("⏱ خارج Kill Zones")
+            if r["news_block"]:
+                extra_flags.append("📰 وقت أخبار قوية")
+
+            flags_text = ""
+            if extra_flags:
+                flags_text = "\n" + " | ".join(extra_flags)
+
             lines.append(
                 f"{medal} {r['symbol']} {color} ({r['entry_type']})\n"
                 f"{side_tag}\n"
@@ -604,6 +707,8 @@ class InstitutionalEngine:
                 f"TP: {lv['tp']:.4f}\n"
                 f"R:R = 1:{lv['rr']}\n"
                 f"نسبة الثقة النموذجية: {r['prob']}%\n"
+                f"تصنيف الإشارة: {r['quality']} (Confluence: {r['confluence']})"
+                f"{flags_text}\n"
                 f"{'-'*35}"
             )
             lines.append(f"📌 سلوك السعر المؤسسي : {r['behavior']}")
@@ -628,6 +733,18 @@ class InstitutionalEngine:
         color = "🟢" if lv["side"] == "Long" else "🔴"
         header = f"⏰ فحص آلي - صفقة مؤسسية جديدة ({res['entry_type']})"
 
+        extra_flags = []
+        if res["low_vol"]:
+            extra_flags.append("⚠️ تذبذب ضعيف")
+        if not res["kill_ok"]:
+            extra_flags.append("⏱ خارج Kill Zones")
+        if res["news_block"]:
+            extra_flags.append("📰 وقت أخبار قوية")
+
+        flags_text = ""
+        if extra_flags:
+            flags_text = "\n" + " | ".join(extra_flags)
+
         msg = (
             f"{header}\n"
             f"{res['symbol']} {color}\n"
@@ -637,6 +754,8 @@ class InstitutionalEngine:
             f"TP: {lv['tp']:.4f}\n"
             f"R:R = 1:{lv['rr']}\n"
             f"نسبة الثقة النموذجية: {res['prob']}%\n"
+            f"تصنيف الإشارة: {res['quality']} (Confluence: {res['confluence']})"
+            f"{flags_text}\n"
             f"{'-'*35}\n"
             f"📌 سلوك السعر المؤسسي : {res['behavior']}"
         )
@@ -676,12 +795,26 @@ class InstitutionalEngine:
                 else "الحالي"
             )
 
+            extra_flags = []
+            if r["low_vol"]:
+                extra_flags.append("⚠️ تذبذب ضعيف")
+            if not r["kill_ok"]:
+                extra_flags.append("⏱ خارج Kill Zones")
+            if r["news_block"]:
+                extra_flags.append("📰 وقت أخبار قوية")
+
+            flags_text = ""
+            if extra_flags:
+                flags_text = "\n" + " | ".join(extra_flags)
+
             lines.append(
                 f"{i}) #{r['symbol']}\n"
                 f"⏰ 4h: اتجاه {r['trend']}.\n"
                 "🕰 1h: قراءة هيكل السوق والسيولة المؤسسية.\n"
                 "🕒 15m: زخم يدعم السيناريو الحالي.\n"
                 f"📉 التوقع النموذجي: {r['prob']}% لاستمرار الاتجاه {trend_word}\n"
+                f"تصنيف الإشارة: {r['quality']} (Confluence: {r['confluence']})"
+                f"{flags_text}\n"
                 f"{'-'*55}"
             )
 
@@ -757,6 +890,13 @@ async def auto_loop():
                 continue
             if res["prob"] < MIN_PROB_AUTO:
                 continue
+            # فلتر تذبذب + Kill Zone + أخبار
+            if res["low_vol"]:
+                continue
+            if not res["kill_ok"]:
+                continue
+            if res["news_block"]:
+                continue
             if not best or res["prob"] > best["prob"]:
                 best = res
 
@@ -770,7 +910,7 @@ async def auto_loop():
 # =========================
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "bot": "InstitutionalSMC_Advanced"}
+    return {"status": "healthy", "bot": "InstitutionalSMC_Encyclopedia"}
 
 @app.post("/webhook")
 async def webhook(req: Request):
