@@ -669,14 +669,18 @@ class InstitutionalEngine:
             return
 
     async def send_manual_trades(self, chat_id: int):
-        results: List[Dict[str, Any]] = []
-        for s in SYMBOLS:
-            res = await self.analyze_symbol(s)
-            if res:
-                results.append(res)
-        if not results:
-            await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
-            return
+    results: List[Dict[str, Any]] = []
+    for s in SYMBOLS:
+        res = await self.analyze_symbol(s)
+        if res:
+            results.append(res)
+
+    # ← هنا بالضبط نضيف شرط 70%
+    results = [r for r in results if r["prob"] >= 70]
+
+    if not results:
+        await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
+        return
         results.sort(key=lambda x: x["prob"], reverse=True)
         top = results[:2]
 
