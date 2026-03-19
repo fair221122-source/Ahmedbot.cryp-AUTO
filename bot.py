@@ -744,7 +744,7 @@ class InstitutionalEngine:
                 f"SL: {lv['sl']:.4f}\n"
                 f"TP: {lv['tp']:.4f}\n"
                 f"R:R = 1:{lv['rr']}\n"
-                f"نسبة الثقة النموذجية: {r['prob']}%\n"
+                f"نسبة النجاح المتوقعة: {r['prob']}%\n"
                 f"تصنيف الإشارة: {r['quality']} (Confluence: {r['confluence']})"
                 f"{flags_text}\n"
                 f"{'-'*35}"
