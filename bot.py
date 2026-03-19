@@ -789,7 +789,9 @@ class InstitutionalEngine:
 
         await self.send_msg(chat_id, msg)
 
-async def send_analysis(self, chat_id: int):
+class InstitutionalEngine:
+
+    async def send_analysis(self, chat_id: int):
         news = await self.fetch_news()
         focus = await self.get_top_active_symbols(limit=3)
 
@@ -801,6 +803,7 @@ async def send_analysis(self, chat_id: int):
             "أكثر ثلاث عملات رقمية نشطة حالياً:",
             "-" * 35
         ]
+
         for i, r in enumerate(focus, start=1):
             if not r:
                 continue
