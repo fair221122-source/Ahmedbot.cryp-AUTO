@@ -668,19 +668,29 @@ class InstitutionalEngine:
         async with (await self.get_session()).post(url, json=payload, timeout=15):
             return
 
+    async def send_msg(self, chat_id: int, text: str):
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": f"\u202B{text}",
+            "parse_mode": "Markdown"
+        }
+        async with (await self.get_session()).post(url, json=payload, timeout=15):
+            return
+
     async def send_manual_trades(self, chat_id: int):
-    results: List[Dict[str, Any]] = []
-    for s in SYMBOLS:
-        res = await self.analyze_symbol(s)
-        if res:
-            results.append(res)
+        results: List[Dict[str, Any]] = []
+        for s in SYMBOLS:
+            res = await self.analyze_symbol(s)
+            if res:
+                results.append(res)
 
-    # ← هنا بالضبط نضيف شرط 70%
-    results = [r for r in results if r["prob"] >= 70]
+        # فلترة الصفقات بحيث تكون ≥ 70%
+        results = [r for r in results if r["prob"] >= 70]
 
-    if not results:
-        await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
-        return
+        if not results:
+            await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
+            return
         results.sort(key=lambda x: x["prob"], reverse=True)
         top = results[:2]
 
