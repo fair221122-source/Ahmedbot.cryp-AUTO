@@ -46,6 +46,66 @@ class InstitutionalEngine:
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
 
+    async def safe_request(self, method: str, url: str, **kwargs):
+        """
+        أهم دالة في النظام:
+        - جلسة HTTP محسّنة
+        - Retry تلقائي
+        - Logging كامل
+        - حماية ضد Flood
+        - حماية ضد انقطاع الاتصال
+        - حماية ضد Rate Limit
+        """
+
+        # حماية ضد Flood في Telegram
+        global LAST_TELEGRAM_SEND
+        if "api.telegram.org" in url:
+            now = time.time()
+            if now - LAST_TELEGRAM_SEND < 0.7:
+                await asyncio.sleep(0.7)
+            LAST_TELEGRAM_SEND = time.time()
+
+        # إنشاء جلسة محسّنة
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(
+                total=30,
+                connect=12,
+                sock_read=12,
+                sock_connect=12
+            )
+            connector = aiohttp.TCPConnector(
+                limit=150,
+                enable_cleanup_closed=True
+            )
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                trust_env=True
+            )
+
+        # Retry
+        retries = 5
+        delay = 1
+
+        for attempt in range(retries):
+            try:
+                if method.lower() == "get":
+                    async with self.session.get(url, **kwargs) as r:
+                        return await r.json()
+
+                elif method.lower() == "post":
+                    async with self.session.post(url, **kwargs) as r:
+                        return await r.json()
+
+            except Exception as e:
+                logging.error(f"Request failed ({attempt+1}/{retries}): {e}")
+
+                if attempt == retries - 1:
+                    raise
+
+                await asyncio.sleep(delay)
+                delay *= 1.5
+
     async def get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
