@@ -778,7 +778,7 @@ class InstitutionalEngine:
         results.sort(key=lambda x: x["prob"], reverse=True)
         top = results[:2]
 
-        lines = ["أفضل صفقتين مؤسسيتين في السوق حالياً:", "-" * 35]
+        lines = ["أفضل صفقتين في السوق حالياً:", "-" * 35]
         for i, r in enumerate(top):
             lv = r["levels"]
             side_tag = "#Long" if lv["side"] == "Long" else "#Short"
@@ -809,7 +809,7 @@ class InstitutionalEngine:
                 f"{flags_text}\n"
                 f"{'-'*35}"
             )
-            lines.append(f"📌 سلوك السعر المؤسسي : {r['behavior']}")
+            lines.append(f"📌 ملاحظة : {r['behavior']}")
             if r["entry_type"] == "معلّق":
                 lines.append("🔹️ سيتم إرسال رسالة تأكيد عند وصول السعر إلى منطقة الدخول المقترحة.")
                 monitored_trades[r["symbol"]] = {
@@ -829,7 +829,7 @@ class InstitutionalEngine:
         lv = res["levels"]
         side_tag = "#Long" if lv["side"] == "Long" else "#Short"
         color = "🟢" if lv["side"] == "Long" else "🔴"
-        header = f"⏰ فحص آلي - صفقة مؤسسية جديدة ({res['entry_type']})"
+        header = f"⏰ فحص آلي - صفقة جديدة ({res['entry_type']})"
 
         extra_flags = []
         if res["low_vol"]:
@@ -855,7 +855,7 @@ class InstitutionalEngine:
             f"تصنيف الإشارة: {res['quality']} (Confluence: {res['confluence']})"
             f"{flags_text}\n"
             f"{'-'*35}\n"
-            f"📌 سلوك السعر المؤسسي : {res['behavior']}"
+            f"📌 ملاحظة : {res['behavior']}"
         )
 
         if res["entry_type"] == "معلّق":
@@ -947,7 +947,7 @@ async def websocket_monitor():
                         if abs(price - ep) / ep <= ENTRY_ALERT_TOLERANCE:
                             chat_id = monitored_trades[s]["chat_id"]
                             text = (
-                                "🔔 تنبيه مؤسسي:\n"
+                                "🔔 تنبيه :\n"
                                 f"السعر وصل منطقة الدخول المقترحة لزوج {s}، راجع النموذج وقرر."
                             )
                             await engine.send_msg(chat_id, text)
