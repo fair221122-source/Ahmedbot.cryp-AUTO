@@ -29,7 +29,7 @@ SYMBOLS = [
 AUTO_SCAN_INTERVAL = 300        # كل 5 دقائق
 COOLDOWN_SECONDS = 1800         # 30 دقيقة
 ENTRY_ALERT_TOLERANCE = 0.005   # 0.5% لتنبيه الوصول لمنطقة الدخول
-MIN_PROB_AUTO = 65              # حد أدنى للنسبة في الفحص الآلي
+MIN_PROB_AUTO = 70              # حد أدنى للنسبة في الفحص الآلي
 
 app = FastAPI()
 
