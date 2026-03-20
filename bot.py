@@ -710,7 +710,7 @@ class InstitutionalEngine:
                 results.append(res)
 
         # فلترة الصفقات بحيث تكون ≥ 70%
-        results = [r for r in results if r["prob"] >= 65]
+        results = [r for r in results if r["prob"] >= 70]
 
         if not results:
             await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
