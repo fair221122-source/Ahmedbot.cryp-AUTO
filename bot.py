@@ -2,6 +2,7 @@ import os
 import time
 import json
 import asyncio
+import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
@@ -14,7 +15,11 @@ import uvicorn
 # =========================
 # الإعدادات العامة
 # =========================
+logging.basicConfig(level=logging.INFO)
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not set")
 
 FAPI_BASE = "https://fapi.binance.com"
 FAPI_WS = "wss://fstream.binance.com/ws/!ticker@arr"
@@ -37,6 +42,7 @@ last_sent: Dict[str, float] = {}
 monitored_trades: Dict[str, Dict[str, Any]] = {}
 open_trades: Dict[str, Dict[str, Any]] = {}
 GLOBAL_CHAT_ID: Optional[int] = None
+LAST_TELEGRAM_SEND = 0.0
 
 
 # =========================
@@ -56,9 +62,9 @@ class InstitutionalEngine:
         - حماية ضد انقطاع الاتصال
         - حماية ضد Rate Limit
         """
+        global LAST_TELEGRAM_SEND
 
         # حماية ضد Flood في Telegram
-        global LAST_TELEGRAM_SEND
         if "api.telegram.org" in url:
             now = time.time()
             if now - LAST_TELEGRAM_SEND < 0.7:
@@ -83,39 +89,31 @@ class InstitutionalEngine:
                 trust_env=True
             )
 
-        # Retry
         retries = 5
-        delay = 1
+        delay = 1.0
 
         for attempt in range(retries):
             try:
                 if method.lower() == "get":
                     async with self.session.get(url, **kwargs) as r:
                         return await r.json()
-
                 elif method.lower() == "post":
                     async with self.session.post(url, **kwargs) as r:
                         return await r.json()
-
+                else:
+                    raise ValueError(f"Unsupported method: {method}")
             except Exception as e:
-                logging.error(f"Request failed ({attempt+1}/{retries}): {e}")
-
+                logging.error(f"Request failed ({attempt+1}/{retries}) {method} {url}: {e}")
                 if attempt == retries - 1:
+                    logging.exception(e)
                     raise
-
                 await asyncio.sleep(delay)
                 delay *= 1.5
-
-    async def get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
-        return self.session
 
     async def fetch_klines(self, symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
         url = f"{FAPI_BASE}/fapi/v1/klines"
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        async with (await self.get_session()).get(url, params=params, timeout=15) as r:
-            data = await r.json()
+        data = await self.safe_request("get", url, params=params)
         df = pd.DataFrame(
             data,
             columns=["open_time", "open", "high", "low", "close", "volume",
@@ -124,7 +122,7 @@ class InstitutionalEngine:
         for c in ["open", "high", "low", "close", "volume"]:
             df[c] = df[c].astype(float)
         return df
-        
+
     async def fetch_news(self):
         import feedparser
         from deep_translator import GoogleTranslator
@@ -147,8 +145,10 @@ class InstitutionalEngine:
 
             return "\n\n".join(news_list)
 
-        except Exception:
+        except Exception as e:
+            logging.exception(e)
             return "تعذر جلب أخبار RSS حالياً."
+
     # =========================
     # ATR ذكي
     # =========================
@@ -176,17 +176,12 @@ class InstitutionalEngine:
         """
         now_utc = datetime.now(timezone.utc)
         h = now_utc.hour
-        # لندن أو نيويورك
         return (7 <= h <= 11) or (12 <= h <= 20)
 
     # =========================
     # فلتر تذبذب (Low Volatility Filter)
     # =========================
     def is_low_volatility(self, df1h: pd.DataFrame, atr: float) -> bool:
-        """
-        نعتبر السوق ميت إذا كان متوسط المدى السعري ضعيف جداً
-        مقارنة بالسعر الحالي (رينج ضيق).
-        """
         if len(df1h) < 40:
             return False
         recent = df1h.tail(30)
@@ -197,21 +192,45 @@ class InstitutionalEngine:
         if price <= 0:
             return False
         rel_range = avg_range / price
-        # لو الرينج أقل من 0.4% نعتبره تذبذب ضعيف
         return bool(rel_range < 0.004)
+
+    # =========================
+    # فلتر Range / Consolidation
+    # =========================
+    def is_ranging(self, df1h: pd.DataFrame) -> bool:
+        """
+        نعتبر السوق في رينج إذا كان السعر يتحرك داخل نطاق ضيق
+        مع غياب قمم وقيعان واضحة.
+        """
+        if len(df1h) < 80:
+            return False
+        recent = df1h.tail(60)
+        high = recent["high"].max()
+        low = recent["low"].min()
+        price = recent["close"].iloc[-1]
+        if price <= 0:
+            return False
+        total_range = (high - low) / price
+        # رينج ضيق أقل من 2.5%
+        if total_range < 0.025:
+            return True
+        return False
 
     # =========================
     # هيكل جاهز لفلتر أخبار (يمكنك ربطه لاحقاً)
     # =========================
     def is_news_time(self) -> bool:
         """
-        هنا يمكنك لاحقاً ربط أوقات الأخبار القوية (FOMC, CPI, NFP...)
-        حالياً نعيد False دائماً حتى لا نمنع أي صفقة.
+        هنا يمكن ربط أوقات الأخبار القوية (FOMC, CPI, NFP...)
+        حالياً نستخدم منطق بسيط: نتجنب أول 5 دقائق بعد بداية كل ساعة.
         """
+        now_utc = datetime.now(timezone.utc)
+        if now_utc.minute <= 5:
+            return True
         return False
 
     # =========================
-    # هيكل السوق (BOS / CHOCH)
+    # هيكل السوق (BOS / CHOCH) + قوة الكسر
     # =========================
     def detect_market_structure(self, df4h: pd.DataFrame, df1h: pd.DataFrame) -> str:
         c4 = df4h["close"].tail(120)
@@ -359,6 +378,38 @@ class InstitutionalEngine:
         return bool(z_low <= last["close"] <= z_high)
 
     # =========================
+    # Smart Money Trap (Sweep + Rejection)
+    # =========================
+    def detect_smart_money_trap(self, df: pd.DataFrame) -> bool:
+        """
+        نبحث عن Sweep ثم شمعة رفض قوية تعيد السعر داخل النطاق.
+        """
+        if len(df) < 20:
+            return False
+        recent = df.tail(10)
+        high = recent["high"]
+        low = recent["low"]
+        close = recent["close"]
+        open_ = recent["open"]
+
+        # شمعة أخيرة ذات ذيل طويل ورفض واضح
+        last = recent.iloc[-1]
+        body = abs(last["close"] - last["open"])
+        rng = last["high"] - last["low"]
+        if rng <= 0:
+            return False
+        long_wick = (rng - body) / rng > 0.6
+
+        # تحقق من أن الشمعة كسرت قمة/قاع ثم أغلقت داخل النطاق السابق
+        prev_high = high.iloc[:-1].max()
+        prev_low = low.iloc[:-1].min()
+
+        swept_up = last["high"] > prev_high and last["close"] < prev_high
+        swept_down = last["low"] < prev_low and last["close"] > prev_low
+
+        return bool(long_wick and (swept_up or swept_down))
+
+    # =========================
     # الزخم (RSI / Volume / Cluster)
     # =========================
     def rsi(self, series: pd.Series, period: int = 14) -> float:
@@ -377,6 +428,39 @@ class InstitutionalEngine:
         return bool(last > avg * 1.8)
 
     # =========================
+    # Volume Imbalance بسيط
+    # =========================
+    def detect_volume_imbalance(self, df: pd.DataFrame) -> bool:
+        if len(df) < 40:
+            return False
+        vol = df["volume"].tail(30)
+        avg = vol.mean()
+        last = vol.iloc[-1]
+        return bool(last > avg * 2.0)
+
+    # =========================
+    # OTE (Optimal Trade Entry) بسيط
+    # =========================
+    def compute_ote_level(self, df1h: pd.DataFrame, trend: str) -> Optional[float]:
+        if len(df1h) < 30:
+            return None
+        recent = df1h.tail(30)
+        swing_high = recent["high"].max()
+        swing_low = recent["low"].min()
+        if trend == "صاعد":
+            # OTE شراء بين 62% و 79% من الحركة الهابطة الأخيرة
+            diff = swing_high - swing_low
+            level_62 = swing_low + diff * 0.62
+            level_79 = swing_low + diff * 0.79
+            return (level_62 + level_79) / 2
+        elif trend == "هابط":
+            diff = swing_high - swing_low
+            level_62 = swing_high - diff * 0.62
+            level_79 = swing_high - diff * 0.79
+            return (level_62 + level_79) / 2
+        return None
+
+    # =========================
     # نموذج النسبة (أقرب للواقع)
     # =========================
     def score_signal(
@@ -389,17 +473,20 @@ class InstitutionalEngine:
         liq_pools: Dict[str, bool],
         liq_zone: bool,
         cluster: bool,
-        df15m: pd.DataFrame
+        df15m: pd.DataFrame,
+        smart_trap: bool,
+        vol_imbalance: bool,
+        multi_tf_liq: bool
     ) -> int:
         score = 0
 
         # هيكل السوق
         if trend == "صاعد" or trend == "هابط":
-            score += 15
+            score += 18
 
         # FVG / Imbalance
         if fvg:
-            score += 10
+            score += 8
 
         # Order Block / Breaker / Mitigation
         if ob:
@@ -413,7 +500,7 @@ class InstitutionalEngine:
         if liq_pools["equal_highs"] or liq_pools["equal_lows"]:
             score += 6
         if liq_pools["sweep_high"] or liq_pools["sweep_low"]:
-            score += 10
+            score += 12
         if liq_zone:
             score += 6
 
@@ -427,6 +514,15 @@ class InstitutionalEngine:
         if cluster:
             score += 8
 
+        if smart_trap:
+            score += 10
+
+        if vol_imbalance:
+            score += 6
+
+        if multi_tf_liq:
+            score += 6
+
         score = max(0, min(100, score))
         return int(score)
 
@@ -434,11 +530,6 @@ class InstitutionalEngine:
     # تصنيف جودة الإشارة (A / B / C)
     # =========================
     def classify_quality(self, prob: int, confluence_count: int) -> str:
-        """
-        A: نسبة عالية + تداخل إشارات قوي
-        B: نسبة متوسطة + تداخل جيد
-        C: أقل من ذلك
-        """
         if prob >= 80 and confluence_count >= 6:
             return "A"
         if prob >= 65 and confluence_count >= 4:
@@ -459,7 +550,8 @@ class InstitutionalEngine:
         liq_zone: bool,
         cluster: bool,
         prob: int,
-        entry_type: str
+        entry_type: str,
+        smart_trap: bool
     ) -> float:
         rr = 2.7
 
@@ -472,11 +564,13 @@ class InstitutionalEngine:
         if breaker or mit_block:
             rr += 0.3
         if liq_pools["sweep_high"] or liq_pools["sweep_low"]:
-            rr += 0.4
+            rr += 0.5
         if cluster:
             rr += 0.3
         if liq_zone:
             rr += 0.2
+        if smart_trap:
+            rr += 0.4
 
         if prob >= 80:
             rr += 0.7
@@ -496,7 +590,8 @@ class InstitutionalEngine:
         trend: str,
         ob: bool,
         fvg: bool,
-        mit_block: bool
+        mit_block: bool,
+        ote_level: Optional[float]
     ) -> float:
         entry = price
 
@@ -509,6 +604,9 @@ class InstitutionalEngine:
         if mit_block or ob:
             eq = df1h["close"].tail(6).mean()
             entry = (entry + eq) / 2
+
+        if ote_level is not None:
+            entry = (entry + ote_level) / 2
 
         return float(entry)
 
@@ -525,12 +623,13 @@ class InstitutionalEngine:
         liq_pools: Dict[str, bool],
         liq_zone: bool,
         cluster: bool,
-        entry_type: str
+        entry_type: str,
+        smart_trap: bool
     ) -> Dict[str, Any]:
         if atr <= 0:
             return {}
 
-        atr_mult = round(np.random.uniform(1.5, 1.8), 2)
+        atr_mult = 1.6
         side = "Long" if trend == "صاعد" else "Short"
 
         rr = self.build_rr(
@@ -543,7 +642,8 @@ class InstitutionalEngine:
             liq_zone,
             cluster,
             prob,
-            entry_type
+            entry_type,
+            smart_trap
         )
 
         if side == "Long":
@@ -578,7 +678,9 @@ class InstitutionalEngine:
         cluster: bool,
         prob: int,
         entry_type: str,
-        quality: str
+        quality: str,
+        smart_trap: bool,
+        vol_imbalance: bool
     ) -> str:
         parts = []
 
@@ -605,6 +707,10 @@ class InstitutionalEngine:
             parts.append("تكدس واضح للسيولة في نطاق سعري ضيق (Liquidity Zone)")
         if cluster:
             parts.append("ضغط واضح في أحجام التداول على الفريمات الصغيرة (Cluster Pressure)")
+        if smart_trap:
+            parts.append("وجود Smart Money Trap (Sweep + رفض قوي) يدعم السيناريو")
+        if vol_imbalance:
+            parts.append("وجود Volume Imbalance واضح يعكس دخول سيولة قوية")
 
         if prob >= 80:
             parts.append("توافق قوي بين الهيكل والسيولة والزخم")
@@ -629,13 +735,22 @@ class InstitutionalEngine:
             df5m = await self.fetch_klines(symbol, "5m", 300)
 
             trend = self.detect_market_structure(df4h, df1h)
-            liq_pools = self.detect_liquidity_pools(df1h)
-            liq_zone = self.detect_liquidity_zones(df1h)
+            liq_pools_1h = self.detect_liquidity_pools(df1h)
+            liq_zone_1h = self.detect_liquidity_zones(df1h)
+            liq_pools_4h = self.detect_liquidity_pools(df4h)
+            liq_zone_4h = self.detect_liquidity_zones(df4h)
+            multi_tf_liq = (
+                (liq_pools_1h["equal_highs"] or liq_pools_1h["equal_lows"] or liq_zone_1h) and
+                (liq_pools_4h["equal_highs"] or liq_pools_4h["equal_lows"] or liq_zone_4h)
+            )
+
             fvg = self.detect_fvg(df1h)
             ob = self.detect_orderblock(df1h, trend)
             breaker = self.detect_breaker_block(df1h, trend)
             mit_block = self.detect_mitigation_block(df1h, trend)
             cluster = self.detect_cluster_pressure(df5m)
+            smart_trap = self.detect_smart_money_trap(df1h)
+            vol_imbalance = self.detect_volume_imbalance(df1h)
 
             prob = self.score_signal(
                 trend,
@@ -643,35 +758,43 @@ class InstitutionalEngine:
                 ob,
                 breaker,
                 mit_block,
-                liq_pools,
-                liq_zone,
+                liq_pools_1h,
+                liq_zone_1h,
                 cluster,
-                df15m
+                df15m,
+                smart_trap,
+                vol_imbalance,
+                multi_tf_liq
             )
 
             price = float(df5m["close"].iloc[-1])
             atr = self.calc_atr(df1h)
             ref_price = float(df1h["close"].iloc[-1])
             entry_type = self.classify_type(price, ref_price)
-            refined_entry = self.refine_entry(price, df1h, trend, ob, fvg, mit_block)
+
+            ote_level = self.compute_ote_level(df1h, trend)
+            refined_entry = self.refine_entry(price, df1h, trend, ob, fvg, mit_block, ote_level)
 
             low_vol = self.is_low_volatility(df1h, atr)
             kill_ok = self.in_kill_zone()
             news_block = self.is_news_time()
+            ranging = self.is_ranging(df1h)
 
-            # عدد التوافقات (Confluence Count)
             confluence_count = sum([
                 trend != "محايد",
                 fvg,
                 ob,
                 breaker,
                 mit_block,
-                liq_pools["equal_highs"],
-                liq_pools["equal_lows"],
-                liq_pools["sweep_high"],
-                liq_pools["sweep_low"],
-                liq_zone,
-                cluster
+                liq_pools_1h["equal_highs"],
+                liq_pools_1h["equal_lows"],
+                liq_pools_1h["sweep_high"],
+                liq_pools_1h["sweep_low"],
+                liq_zone_1h,
+                cluster,
+                smart_trap,
+                vol_imbalance,
+                multi_tf_liq
             ])
 
             quality = self.classify_quality(prob, confluence_count)
@@ -685,10 +808,11 @@ class InstitutionalEngine:
                 ob,
                 breaker,
                 mit_block,
-                liq_pools,
-                liq_zone,
+                liq_pools_1h,
+                liq_zone_1h,
                 cluster,
-                entry_type
+                entry_type,
+                smart_trap
             )
             if not levels:
                 return None
@@ -700,13 +824,19 @@ class InstitutionalEngine:
                 ob,
                 breaker,
                 mit_block,
-                liq_pools,
-                liq_zone,
+                liq_pools_1h,
+                liq_zone_1h,
                 cluster,
                 prob,
                 entry_type,
-                quality
+                quality,
+                smart_trap,
+                vol_imbalance
             )
+
+            # فلاتر إضافية لرفع جودة الإشارة
+            if ranging:
+                return None
 
             return {
                 "symbol": symbol,
@@ -720,25 +850,28 @@ class InstitutionalEngine:
                 "ob": ob,
                 "breaker": breaker,
                 "mit_block": mit_block,
-                "liq_pools": liq_pools,
-                "liq_zone": liq_zone,
+                "liq_pools": liq_pools_1h,
+                "liq_zone": liq_zone_1h,
                 "cluster": cluster,
                 "behavior": behavior,
                 "quality": quality,
                 "confluence": confluence_count,
                 "low_vol": low_vol,
                 "kill_ok": kill_ok,
-                "news_block": news_block
+                "news_block": news_block,
+                "smart_trap": smart_trap,
+                "vol_imbalance": vol_imbalance,
+                "multi_tf_liq": multi_tf_liq,
+                "ranging": ranging
             }
-        except Exception:
+        except Exception as e:
+            logging.exception(e)
             return None
 
     async def get_top_active_symbols(self, limit: int = 3) -> List[Optional[Dict[str, Any]]]:
-        results: List[Dict[str, Any]] = []
-        for s in SYMBOLS:
-            res = await self.analyze_symbol(s)
-            if res:
-                results.append(res)
+        tasks = [self.analyze_symbol(s) for s in SYMBOLS]
+        results_raw = await asyncio.gather(*tasks)
+        results: List[Dict[str, Any]] = [r for r in results_raw if r]
         results.sort(key=lambda x: x["prob"], reverse=True)
         return results[:limit]
 
@@ -749,32 +882,22 @@ class InstitutionalEngine:
             "text": f"\u202B{text}",
             "parse_mode": "Markdown"
         }
-        async with (await self.get_session()).post(url, json=payload, timeout=15):
-            return
-
-    async def send_msg(self, chat_id: int, text: str):
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": f"\u202B{text}",
-            "parse_mode": "Markdown"
-        }
-        async with (await self.get_session()).post(url, json=payload, timeout=15):
-            return
+        try:
+            await self.safe_request("post", url, json=payload)
+        except Exception as e:
+            logging.exception(e)
 
     async def send_manual_trades(self, chat_id: int):
-        results: List[Dict[str, Any]] = []
-        for s in SYMBOLS:
-            res = await self.analyze_symbol(s)
-            if res:
-                results.append(res)
+        tasks = [self.analyze_symbol(s) for s in SYMBOLS]
+        results_raw = await asyncio.gather(*tasks)
+        results: List[Dict[str, Any]] = [r for r in results_raw if r]
 
-        # فلترة الصفقات بحيث تكون ≥ 70%
         results = [r for r in results if r["prob"] >= 70]
 
         if not results:
             await self.send_msg(chat_id, "لا توجد صفقات مناسبة حالياً.")
             return
+
         results.sort(key=lambda x: x["prob"], reverse=True)
         top = results[:2]
 
@@ -792,6 +915,12 @@ class InstitutionalEngine:
                 extra_flags.append("⏱ خارج Kill Zones")
             if r["news_block"]:
                 extra_flags.append("📰 وقت أخبار قوية")
+            if r["ranging"]:
+                extra_flags.append("📎 السوق في رينج")
+            if r["smart_trap"]:
+                extra_flags.append("🎯 Smart Money Trap")
+            if r["multi_tf_liq"]:
+                extra_flags.append("💧 سيولة متوافقة عبر الفريمات")
 
             flags_text = ""
             if extra_flags:
@@ -838,6 +967,12 @@ class InstitutionalEngine:
             extra_flags.append("⏱ خارج Kill Zones")
         if res["news_block"]:
             extra_flags.append("📰 وقت أخبار قوية")
+        if res["ranging"]:
+            extra_flags.append("📎 السوق في رينج")
+        if res["smart_trap"]:
+            extra_flags.append("🎯 Smart Money Trap")
+        if res["multi_tf_liq"]:
+            extra_flags.append("💧 سيولة متوافقة عبر الفريمات")
 
         flags_text = ""
         if extra_flags:
@@ -903,6 +1038,12 @@ class InstitutionalEngine:
                 extra_flags.append("⏱ خارج Kill Zones")
             if r["news_block"]:
                 extra_flags.append("📰 وقت أخبار قوية")
+            if r["ranging"]:
+                extra_flags.append("📎 السوق في رينج")
+            if r["smart_trap"]:
+                extra_flags.append("🎯 Smart Money Trap")
+            if r["multi_tf_liq"]:
+                extra_flags.append("💧 سيولة متوافقة عبر الفريمات")
 
             flags_text = ""
             if extra_flags:
@@ -929,44 +1070,50 @@ engine = InstitutionalEngine()
 # WebSocket لمراقبة الأسعار
 # =========================
 async def websocket_monitor():
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(FAPI_WS, heartbeat=30, timeout=30) as ws:
-            async for msg in ws:
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    continue
-                data = json.loads(msg.data)
-                ticks = data if isinstance(data, list) else [data]
-                for tick in ticks:
-                    s = tick.get("s")
-                    if not s:
-                        continue
-                    price = float(tick.get("c", 0))
+    while True:
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.ws_connect(FAPI_WS, heartbeat=30, timeout=30) as ws:
+                    async for msg in ws:
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
+                        data = json.loads(msg.data)
+                        ticks = data if isinstance(data, list) else [data]
+                        for tick in ticks:
+                            s = tick.get("s")
+                            if not s:
+                                continue
+                            price = float(tick.get("c", 0))
 
-                    if s in monitored_trades:
-                        ep = monitored_trades[s]["entry"]
-                        if abs(price - ep) / ep <= ENTRY_ALERT_TOLERANCE:
-                            chat_id = monitored_trades[s]["chat_id"]
-                            text = (
-                                "🔔 تنبيه :\n"
-                                f"السعر وصل منطقة الدخول المقترحة لزوج {s}، راجع النموذج وقرر."
-                            )
-                            await engine.send_msg(chat_id, text)
-                            del monitored_trades[s]
+                            if s in monitored_trades:
+                                ep = monitored_trades[s]["entry"]
+                                if abs(price - ep) / ep <= ENTRY_ALERT_TOLERANCE:
+                                    chat_id = monitored_trades[s]["chat_id"]
+                                    text = (
+                                        "🔔 تنبيه :\n"
+                                        f"السعر وصل منطقة الدخول المقترحة لزوج {s}، راجع النموذج وقرر."
+                                    )
+                                    await engine.send_msg(chat_id, text)
+                                    del monitored_trades[s]
 
-                    if s in open_trades:
-                        tr = open_trades[s]
-                        if tr["side"] == "Long" and price >= tr["tp"]:
-                            await engine.send_msg(
-                                tr["chat_id"],
-                                f"\u202B🎯 تم الوصول للهدف في عملة #{s} وفق النموذج المؤسسي."
-                            )
-                            del open_trades[s]
-                        elif tr["side"] == "Short" and price <= tr["tp"]:
-                            await engine.send_msg(
-                                tr["chat_id"],
-                                f"\u202B🎯 تم الوصول للهدف في عملة #{s} وفق النموذج المؤسسي."
-                            )
-                            del open_trades[s]
+                            if s in open_trades:
+                                tr = open_trades[s]
+                                if tr["side"] == "Long" and price >= tr["tp"]:
+                                    await engine.send_msg(
+                                        tr["chat_id"],
+                                        f"\u202B🎯 تم الوصول للهدف في عملة #{s} وفق النموذج المؤسسي."
+                                    )
+                                    del open_trades[s]
+                                elif tr["side"] == "Short" and price <= tr["tp"]:
+                                    await engine.send_msg(
+                                        tr["chat_id"],
+                                        f"\u202B🎯 تم الوصول للهدف في عملة #{s} وفق النموذج المؤسسي."
+                                    )
+                                    del open_trades[s]
+        except Exception as e:
+            logging.error(f"WS reconnect: {e}")
+            await asyncio.sleep(5)
 
 
 # =========================
@@ -977,7 +1124,20 @@ async def auto_loop():
         await asyncio.sleep(AUTO_SCAN_INTERVAL)
         if not GLOBAL_CHAT_ID:
             continue
+
         now = time.time()
+
+        # تنظيف دوري للقواميس
+        for k in list(open_trades.keys()):
+            tr = open_trades[k]
+            # تنظيف بسيط بعد 24 ساعة مثلاً (يمكن تطويره)
+            if now - last_sent.get(k, now) > 86400:
+                del open_trades[k]
+
+        for k in list(monitored_trades.keys()):
+            if now - last_sent.get(k, now) > 86400:
+                del monitored_trades[k]
+
         for s in list(last_sent.keys()):
             if now - last_sent[s] > COOLDOWN_SECONDS:
                 del last_sent[s]
@@ -991,12 +1151,13 @@ async def auto_loop():
                 continue
             if res["prob"] < MIN_PROB_AUTO:
                 continue
-            # فلتر تذبذب + Kill Zone + أخبار
             if res["low_vol"]:
                 continue
             if not res["kill_ok"]:
                 continue
             if res["news_block"]:
+                continue
+            if res["ranging"]:
                 continue
             if not best or res["prob"] > best["prob"]:
                 best = res
@@ -1011,7 +1172,7 @@ async def auto_loop():
 # =========================
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "bot": "InstitutionalSMC_Encyclopedia"}
+    return {"status": "healthy", "bot": "InstitutionalSMC_Encyclopedia_Pro"}
 
 @app.post("/webhook")
 async def webhook(req: Request):
